@@ -6,6 +6,7 @@ import json
 import logging
 import threading
 import time
+from html import escape as _h
 from typing import TYPE_CHECKING, Any, Callable, Dict, List, Optional, Tuple
 
 import httpx
@@ -57,42 +58,37 @@ BOT_COMMANDS_SPEC: List[Dict[str, str]] = [
 
 
 def build_self_selector_inline_keyboard(week_key: str) -> Dict[str, Any]:
-    """ساخت دو دکمه شیشه‌ای اصلی (منوی سلف خوابگاه کوی / منوی سلف مرکزی) + گزینه همه سلف‌ها."""
+    """ساخت دو دکمه شیشه‌ای تمیز (خوابگاه کوی ولنجک / سلف مرکزی)."""
     wk = week_key if week_key in {"prev", "curr", "next"} else "prev"
     return {
         "inline_keyboard": [
             [
-                {"text": "🏠 منوی سلف خوابگاه کوی", "callback_data": f"menu:{wk}:dorm"},
+                {"text": "🏠 منوی خوابگاه کوی ولنجک", "callback_data": f"menu:{wk}:dorm"},
                 {"text": "🏛 منوی سلف مرکزی", "callback_data": f"menu:{wk}:central"},
-            ],
-            [
-                {"text": "📋 همه سلف‌ها یکجا", "callback_data": f"menu:{wk}:all"},
-            ],
+            ]
         ]
     }
 
 
 def build_post_menu_switch_keyboard(week_key: str, current_scope: str) -> Dict[str, Any]:
-    """دکمه‌های شیشه‌ای زیر پیام منو برای جابه‌جایی سریع بین سلف خوابگاه کوی و سلف مرکزی."""
+    """دکمه‌های شیشه‌ای زیر پیام منو برای جابه‌جایی سریع بین خوابگاه کوی ولنجک و سلف مرکزی."""
     wk = week_key if week_key in {"prev", "curr", "next"} else "prev"
     w_label = WEEK_LABELS_FA.get(wk, "هفته")
     row1: List[Dict[str, str]] = []
-    if current_scope == "dorm":
-        row1.append({"text": f"🏛 منوی سلف مرکزی ({w_label})", "callback_data": f"menu:{wk}:central"})
-    elif current_scope == "central":
-        row1.append({"text": f"🏠 منوی سلف خوابگاه کوی ({w_label})", "callback_data": f"menu:{wk}:dorm"})
+    if current_scope == "central":
+        row1.append({"text": f"🏠 خوابگاه کوی ولنجک ({w_label})", "callback_data": f"menu:{wk}:dorm"})
     else:
-        row1.append({"text": "🏠 فقط خوابگاه کوی", "callback_data": f"menu:{wk}:dorm"})
-        row1.append({"text": "🏛 فقط سلف مرکزی", "callback_data": f"menu:{wk}:central"})
+        row1.append({"text": f"🏛 مشاهده سلف مرکزی ({w_label})", "callback_data": f"menu:{wk}:central"})
 
     rows: List[List[Dict[str, str]]] = [row1]
     if wk in {"prev", "curr"}:
+        eff_scope = "central" if current_scope == "central" else "dorm"
         rows.append(
-            [{"text": "🔄 استعلام مجدد از سرور سماد", "callback_data": f"refresh:{wk}:{current_scope}"}]
+            [{"text": "🔄 بروزرسانی از سرور سماد", "callback_data": f"refresh:{wk}:{eff_scope}"}]
         )
     else:
         rows.append(
-            [{"text": "📅 مشاهده منوی هفته قبل (خوابگاه / مرکزی)", "callback_data": "pick:prev"}]
+            [{"text": "📅 منوی هفته قبل", "callback_data": "pick:prev"}]
         )
     return {"inline_keyboard": rows}
 
@@ -294,6 +290,7 @@ class TelegramNotificationChannel(NotificationChannel):
                 payload: Dict[str, Any] = {
                     "chat_id": cid,
                     "text": prefix + chunk,
+                    "parse_mode": "HTML",
                     "disable_web_page_preview": True,
                 }
                 # دکمه‌های شیشه‌ای یا کیبورد را به تکه آخر پیام بچسبان
@@ -336,6 +333,15 @@ class TelegramNotificationChannel(NotificationChannel):
                         desc = str(resp.json().get("description") or "")
                     except Exception:
                         desc = resp.text[:120]
+
+                    # اگر متن سفارشی دارای کاراکتر HTML باز بود، بدون parse_mode ارسال شود
+                    if (
+                        resp.status_code == 400
+                        and "can't parse entities" in desc.lower()
+                        and "parse_mode" in payload
+                    ):
+                        payload.pop("parse_mode", None)
+                        continue
 
                     last_error = RuntimeError(
                         f"خطای API تلگرام برای گیرنده {cid} (کد HTTP {resp.status_code}): {desc}"
@@ -683,17 +689,20 @@ class TelegramNotificationChannel(NotificationChannel):
             existing = self._repository.get_telegram_subscriber(cid)
             clean_code = invite_code.strip()
             code_ok = (not clean_code) or (arg == clean_code)
+            safe_name = _h(dname)
+            safe_uni = _h(self._university_label)
 
             if existing and existing.get("enabled"):
                 self._safe_reply(
                     client,
                     cid,
-                    f"✅ سلام {dname} عزیز!\n"
-                    f"عضویت شما در ربات اطلاع‌رسانی سلف {self._university_label} فعال است.\n\n"
-                    "از دکمه‌های پایین صفحه می‌توانید به راحتی منوی مورد نظرتان را انتخاب کنید:\n"
-                    "• 🍽 منوی هفته آینده\n"
-                    "• 📅 منوی هفته قبل (به تفکیک سلف خوابگاه و سلف مرکزی)\n"
-                    "• 📆 منوی هفته جاری",
+                    f"👋 سلام <b>{safe_name}</b> عزیز!\n"
+                    f"عضویت شما در ربات برنامه غذایی <b>{safe_uni}</b> فعال است.\n"
+                    "━━━━━━━━━━━━━━━━━━\n"
+                    "👇 با دکمه‌های پایین صفحه می‌توانید منوی مورد نظرتان را ببینید:\n"
+                    "▫️ <b>🍽 منوی هفته آینده</b> (خوابگاه کوی ولنجک)\n"
+                    "▫️ <b>📅 منوی هفته قبل</b>\n"
+                    "▫️ <b>📆 منوی هفته جاری</b>",
                     reply_markup=reply_kb,
                 )
             elif auto_subscribe and code_ok:
@@ -710,28 +719,29 @@ class TelegramNotificationChannel(NotificationChannel):
                 self._safe_reply(
                     client,
                     cid,
-                    f"🎉 سلام {dname} عزیز!\n"
-                    f"عضویت شما در ربات اطلاع‌رسانی منوی سلف {self._university_label} با موفقیت فعال شد.\n"
-                    "به محض انتشار یا تغییر برنامه غذایی هفته آینده، لیست کامل وعده‌ها برایتان ارسال می‌شود.\n\n"
-                    "👇 با دکمه‌های زیر می‌توانید همین الان منوی هفته آینده یا هفته قبل (سلف خوابگاه / مرکزی) را ببینید:",
+                    f"🎉 سلام <b>{safe_name}</b> عزیز!\n"
+                    f"عضویت شما در ربات اطلاع‌رسانی منوی <b>خوابگاه کوی ولنجک ({safe_uni})</b> فعال شد.\n"
+                    "━━━━━━━━━━━━━━━━━━\n"
+                    "به محض انتشار یا تغییر برنامه غذایی هفته آینده، لیست تمیز وعده‌ها برایتان ارسال می‌شود.\n\n"
+                    "👇 از دکمه‌های پایین صفحه استفاده کنید:",
                     reply_markup=reply_kb,
                 )
             elif auto_subscribe and not code_ok:
                 self._safe_reply(
                     client,
                     cid,
-                    f"🔒 سلام {dname}!\n"
+                    f"🔒 سلام <b>{safe_name}</b>!\n"
                     "برای عضویت خودکار در این ربات به لینک دعوت دارای کد نیاز دارید، "
                     "یا منتظر بمانید تا مدیر ربات نام شما را از پنل مدیریت تایید کند.\n"
-                    f"🆔 شناسه شما: {cid}",
+                    f"🆔 شناسه شما: <code>{_h(cid)}</code>",
                 )
             else:
                 self._safe_reply(
                     client,
                     cid,
-                    f"👋 سلام {dname}!\n"
-                    "درخواست شما در پنل مدیریت ربات ثبت شد. مدیر ربات می‌تواند با یک کلیک شما را به لیست گیرندگان اضافه کند.\n"
-                    f"🆔 شناسه عددی شما: {cid}",
+                    f"👋 سلام <b>{safe_name}</b>!\n"
+                    "درخواست شما ثبت شد. مدیر ربات می‌تواند با یک کلیک شما را به لیست گیرندگان اضافه کند.\n"
+                    f"🆔 شناسه عددی شما: <code>{_h(cid)}</code>",
                 )
             return auto_added
 
@@ -867,9 +877,9 @@ class TelegramNotificationChannel(NotificationChannel):
                 action, wk, scope = parts[0], parts[1], parts[2]
                 force = action == "refresh"
                 scope_fa = (
-                    "سلف خوابگاه کوی"
+                    "خوابگاه کوی ولنجک"
                     if scope == "dorm"
-                    else ("سلف مرکزی" if scope == "central" else "همه سلف‌ها")
+                    else ("سلف مرکزی" if scope == "central" else "خوابگاه کوی ولنجک")
                 )
                 self._answer_callback_query(
                     client, cb_id, f"⏳ در حال دریافت منوی {scope_fa}..."
@@ -899,10 +909,10 @@ class TelegramNotificationChannel(NotificationChannel):
             heading = "🍽 منوی هفته آینده"
 
         prompt_text = (
-            f"{heading} — {self._university_label}\n"
-            f"🗓 بازه هفته: {wk_range.display_bilingual()}\n"
-            "────────────────────\n"
-            "👇 لطفاً سلف مورد نظر خود را انتخاب کنید:"
+            f"<b>{heading}</b>\n"
+            f"🏛 {_h(self._university_label)}  ·  {_h(wk_range.display_jalali_range())}\n"
+            "━━━━━━━━━━━━━━━━━━\n"
+            "👇 سلف مورد نظر را انتخاب کنید:"
         )
         self._safe_reply(
             client,
@@ -976,14 +986,14 @@ class TelegramNotificationChannel(NotificationChannel):
 
         if clean_wk == "next":
             return (
-                f"📭 منوی هفته آینده ({wk_range.display_bilingual()}) هنوز در آخرین بررسی سامانه سماد منتشر نشده است.\n"
-                "به محض انتشار، لیست کامل غذاها خودکار برایتان ارسال خواهد شد!\n\n"
-                "💡 می‌توانید منوی هفته قبل را با دکمه زیر ببینید:",
-                {"inline_keyboard": [[{"text": "📅 مشاهده منوی هفته قبل (خوابگاه / مرکزی)", "callback_data": "pick:prev"}]]},
+                f"📭 <b>منوی هفته آینده</b> ({_h(wk_range.display_jalali_range())}) هنوز در سامانه سماد منتشر نشده است.\n"
+                "به محض انتشار، منوی <b>خوابگاه کوی ولنجک</b> خودکار برایتان ارسال خواهد شد!\n\n"
+                "💡 می‌توانید منوی هفته گذشته را با دکمه زیر ببینید:",
+                {"inline_keyboard": [[{"text": "📅 مشاهده منوی هفته قبل", "callback_data": "pick:prev"}]]},
             )
 
         return (
-            f"📭 برنامه غذایی برای {w_label} ({wk_range.display_bilingual()}) در سامانه سماد یافت نشد.",
+            f"📭 برنامه غذایی برای <b>{_h(w_label)}</b> ({_h(wk_range.display_jalali_range())}) در سامانه سماد یافت نشد.",
             build_self_selector_inline_keyboard(clean_wk),
         )
 

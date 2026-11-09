@@ -521,6 +521,24 @@ class SamadClient:
         if not isinstance(raw_selfs, list):
             raise SiteStructureChangedError("ساختار لیست سلف‌ها آرایه معتبر نیست.")
 
+        excluded_dorm_keywords = (
+            "عباسپور",
+            "تهرانپارس",
+            "حکیمیه",
+            "ابوریحان",
+            "سلامت",
+            "ولیعصر",
+            "نرگس",
+            "رستگار",
+            "هفت تیر",
+            "۷ تیر",
+            "7 تیر",
+        )
+        has_custom_filter = bool(
+            not ignore_user_filter
+            and (self.config.samad_self_ids or self.config.samad_self_name_filter)
+        )
+
         food_selfs: List[SelfServiceInfo] = []
         for item in raw_selfs:
             if not isinstance(item, dict) or item.get("id") is None:
@@ -537,19 +555,17 @@ class SamadClient:
                 continue
 
             name = " ".join(str(item.get("name") or f"سلف {self_id}").strip().split())
-            norm_name = name.replace("ي", "ی").replace("ك", "ک")
-            # در بین خوابگاه‌های دانشگاه شهید بهشتی، فقط «خوابگاه کوی» مدنظر است (مگر اینکه کاربر فیلتر دستی داده باشد)
-            has_custom_filter = bool(
-                not ignore_user_filter
-                and (self.config.samad_self_ids or self.config.samad_self_name_filter)
-            )
-            if (
-                not has_custom_filter
-                and ("خوابگاه" in norm_name or "سرا" in norm_name)
-                and "کوی" not in norm_name
+            norm_name = name.replace("ي", "ی").replace("ك", "ک").replace("\u200c", " ")
+            is_dorm_entry = (
+                any(kw in norm_name for kw in ("خوابگاه", "کوی", "سرا"))
                 and "مرکزی" not in norm_name
-            ):
-                continue
+            )
+            # در بین خوابگاه‌های دانشگاه شهید بهشتی، فقط «خوابگاه کوی ولنجک» مدنظر است
+            if not has_custom_filter and is_dorm_entry:
+                if "کوی" not in norm_name:
+                    continue
+                if any(bad in norm_name for bad in excluded_dorm_keywords):
+                    continue
 
             free_rest = bool(item.get("freeRestaurant"))
             food_selfs.append(
@@ -560,6 +576,36 @@ class SamadClient:
                     free_restaurant=free_rest,
                 )
             )
+
+        # اگر هم خوابگاه کوی یارانه‌ای و هم مکمل/آزاد یا چند کوی بود، فقط سلف اصلی «خوابگاه کوی ولنجک» نگه داشته شود
+        if not has_custom_filter and food_selfs:
+            dorm_items = [
+                s
+                for s in food_selfs
+                if any(
+                    kw in s.name.replace("ي", "ی").replace("ك", "ک")
+                    for kw in ("خوابگاه", "کوی", "سرا")
+                )
+                and "مرکزی" not in s.name.replace("ي", "ی").replace("ك", "ک")
+            ]
+            if len(dorm_items) > 1:
+                non_dorm_items = [s for s in food_selfs if s not in dorm_items]
+                subsidized_dorms = [
+                    s
+                    for s in dorm_items
+                    if not s.free_restaurant
+                    and "مکمل" not in s.name
+                    and "آزاد" not in s.name
+                ]
+                chosen_dorms = subsidized_dorms or dorm_items
+                velenjak_dorms = [
+                    s
+                    for s in chosen_dorms
+                    if "ولنجک" in s.name.replace("ي", "ی").replace("ك", "ک")
+                ]
+                if velenjak_dorms:
+                    chosen_dorms = velenjak_dorms
+                food_selfs = non_dorm_items + chosen_dorms[:1]
 
         if not ignore_user_filter:
             if self.config.samad_self_ids:

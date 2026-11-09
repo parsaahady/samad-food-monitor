@@ -224,8 +224,10 @@ function isAnyDormRestaurantName(name) {
 }
 
 function isKoyDormRestaurantName(name) {
-  const norm = String(name || "").replace(/ي/g, "ی").replace(/ك/g, "ک");
+  const norm = String(name || "").replace(/ي/g, "ی").replace(/ك/g, "ک").replace(/\u200c/g, " ");
   if (norm.includes("مرکزی")) return false;
+  const excluded = ["عباسپور", "تهرانپارس", "حکیمیه", "ابوریحان", "سلامت", "ولیعصر", "نرگس", "رستگار", "مکمل", "آزاد"];
+  if (excluded.some((kw) => norm.includes(kw))) return false;
   return norm.includes("کوی");
 }
 

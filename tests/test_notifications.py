@@ -313,8 +313,9 @@ def test_previous_week_bot_menu_with_dorm_and_central_options(tmp_path) -> None:
                     "code": 0,
                     "payload": [
                         {"id": 101, "name": "سلف مرکزی برادران", "type": "NORMAL", "freeRestaurant": False},
-                        {"id": 102, "name": "سلف خوابگاه کوی پسران", "type": "NORMAL", "freeRestaurant": False},
-                        {"id": 103, "name": "سلف خوابگاه شهید عباسپور", "type": "NORMAL", "freeRestaurant": False},
+                        {"id": 102, "name": "سلف خوابگاه کوی پسران ولنجک", "type": "NORMAL", "freeRestaurant": False},
+                        {"id": 103, "name": "سلف خوابگاه کوی شهید عباسپور", "type": "NORMAL", "freeRestaurant": False},
+                        {"id": 104, "name": "رستوران مکمل خوابگاه کوی ولنجک", "type": "NORMAL", "freeRestaurant": True},
                     ],
                 },
             )
@@ -390,7 +391,7 @@ def test_previous_week_bot_menu_with_dorm_and_central_options(tmp_path) -> None:
     assert len(bot_sent) == 1
     inline_rows = bot_sent[0]["reply_markup"]["inline_keyboard"]
     first_row_texts = [btn["text"] for btn in inline_rows[0]]
-    assert "🏠 منوی سلف خوابگاه کوی" in first_row_texts
+    assert "🏠 منوی خوابگاه کوی ولنجک" in first_row_texts
     assert "🏛 منوی سلف مرکزی" in first_row_texts
 
     # گام ۲: کاربر روی «🏠 منوی سلف خوابگاه» کلیک می‌کند -> واکشی از سماد و نمایش فقط غذای خوابگاه
