@@ -58,3 +58,48 @@ def test_probe_https_release(monkeypatch):
     assert (result.dns, result.tcp, result.tls, result.https, result.release) == ("SUCCESS", "SUCCESS", "SUCCESS", "SUCCESS", "VALID")
     assert result.remote_ip == "203.0.113.1"
     assert result.content_type == "application/json"
+
+
+def test_tls_verification_failure_is_reported_without_exception_text(monkeypatch, capsys):
+    import ssl
+
+    class Socket:
+        def settimeout(self, value): pass
+        def connect(self, address): pass
+        def getpeername(self): return ("203.0.113.1", 443)
+        def close(self): pass
+
+    class Context:
+        def wrap_socket(self, raw, server_hostname):
+            assert server_hostname == "example.test"
+            exc = ssl.SSLCertVerificationError("secret details must not be logged")
+            exc.verify_code = 10
+            exc.verify_message = "secret details must not be logged"
+            raise exc
+
+    monkeypatch.setattr(socket, "getaddrinfo", lambda *a, **k: [(socket.AF_INET, socket.SOCK_STREAM, 0, "", ("203.0.113.1", 443))])
+    monkeypatch.setattr(socket, "socket", lambda *a: Socket())
+    monkeypatch.setattr(ssl, "create_default_context", lambda: Context())
+    result = diagnostic.probe("example.test", "/rest/config/release")
+    assert result.tls == "FAILURE"
+    assert result.https == "NOT TESTED"
+    assert result.error == "TLS_FAILURE"
+    assert result.tls_detail == "CERT_VERIFY_FAILED (CERT_EXPIRED, code 10)"
+    monkeypatch.setattr(diagnostic, "TARGETS", (("example.test", "/rest/config/release"),))
+    monkeypatch.setattr(diagnostic, "run_probe", lambda *args: result)
+    assert diagnostic.main() == 1
+    output = capsys.readouterr().out
+    assert "CERT_EXPIRED" in output
+    assert "secret details" not in output
+
+
+def test_tls_error_details_are_allowlisted():
+    import ssl
+    exc = ssl.SSLCertVerificationError("sensitive")
+    exc.verify_code = 62
+    assert diagnostic.tls_failure_detail(exc) == "CERT_VERIFY_FAILED (HOSTNAME_MISMATCH, code 62)"
+    exc.verify_code = 999
+    assert diagnostic.tls_failure_detail(exc) == "CERT_VERIFY_FAILED (OTHER_VERIFY_ERROR, code 999)"
+    assert diagnostic.tls_failure_detail(ssl.SSLError("sensitive")) == "HANDSHAKE_FAILED (unknown reason)"
+    assert diagnostic.tls_failure_detail(ConnectionResetError("sensitive")) == "CONNECTION_RESET"
+    assert diagnostic.tls_failure_detail(TimeoutError("sensitive")) == "HANDSHAKE_TIMEOUT"

@@ -28,6 +28,42 @@ class Result:
     elapsed_ms: int = 0
     release: str = "NOT TESTED"
     error: str = "-"
+    tls_detail: str = "-"
+
+
+def tls_failure_detail(exc: BaseException) -> str:
+    """Return only predefined TLS labels and numeric verification codes, never exception text."""
+    if isinstance(exc, ssl.SSLCertVerificationError):
+        code = getattr(exc, "verify_code", None)
+        labels = {
+            9: "CERT_NOT_YET_VALID",
+            10: "CERT_EXPIRED",
+            18: "SELF_SIGNED_CERT",
+            19: "SELF_SIGNED_CERT_IN_CHAIN",
+            20: "ISSUER_CERT_UNAVAILABLE",
+            21: "UNABLE_TO_VERIFY_FIRST_CERT",
+            23: "CERT_REVOKED",
+            62: "HOSTNAME_MISMATCH",
+        }
+        if type(code) is int and 0 <= code <= 9999:
+            return f"CERT_VERIFY_FAILED ({labels.get(code, 'OTHER_VERIFY_ERROR')}, code {code})"
+        return "CERT_VERIFY_FAILED (code unavailable)"
+    if isinstance(exc, ssl.SSLError):
+        reason = getattr(exc, "reason", None)
+        allowed = {
+            "SSLV3_ALERT_HANDSHAKE_FAILURE", "TLSV1_ALERT_PROTOCOL_VERSION",
+            "TLSV1_ALERT_INTERNAL_ERROR", "TLSV1_UNRECOGNIZED_NAME",
+            "UNEXPECTED_EOF_WHILE_READING", "WRONG_VERSION_NUMBER",
+            "NO_SHARED_CIPHER", "CERTIFICATE_VERIFY_FAILED",
+        }
+        return f"HANDSHAKE_FAILED ({reason})" if reason in allowed else "HANDSHAKE_FAILED (unknown reason)"
+    if isinstance(exc, (TimeoutError, socket.timeout)):
+        return "HANDSHAKE_TIMEOUT"
+    if isinstance(exc, ConnectionResetError):
+        return "CONNECTION_RESET"
+    if isinstance(exc, ConnectionAbortedError):
+        return "CONNECTION_ABORTED"
+    return "TLS_TRANSPORT_FAILURE"
 
 
 def valid_release(body: bytes) -> bool:
@@ -92,6 +128,8 @@ def probe(host: str, path: str) -> Result:
                     result.error = "INVALID_RELEASE_RESPONSE"
     except (OSError, ssl.SSLError, http.client.HTTPException, TimeoutError) as exc:
         setattr(result, stage.lower(), "FAILURE")
+        if stage == "TLS":
+            result.tls_detail = tls_failure_detail(exc)
         if stage == "DNS":
             result.error = "DNS_FAILURE"
         elif stage == "TLS" and isinstance(exc, ssl.SSLError):
@@ -125,7 +163,7 @@ def main() -> int:
         r = run_probe(host, path)
         success &= r.https == "SUCCESS" and (path != "/rest/config/release" or r.release == "VALID")
         lines += [f"## https://{host}{path}", f"- DNS: {r.dns}", f"- TCP: {r.tcp}",
-                  f"- TLS: {r.tls}", f"- HTTPS: {r.https}", f"- Remote IP: {r.remote_ip}",
+                  f"- TLS: {r.tls}", f"- TLS Detail: {r.tls_detail}", f"- HTTPS: {r.https}", f"- Remote IP: {r.remote_ip}",
                   f"- HTTP Status: {r.status}", f"- Content-Type: {r.content_type}",
                   f"- Response Time: {r.elapsed_ms} ms", f"- Release Endpoint: {r.release}",
                   f"- Error: {r.error}", ""]
