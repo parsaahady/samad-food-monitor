@@ -17,3 +17,6 @@ jobs:
           persist-credentials: false
       - name: Diagnose public endpoints
         run: python3 scripts/samad_network_diagnostic.py
+      - name: Check verified TLS compatibility
+        if: ${{ !cancelled() }}
+        run: python3 scripts/samad_tls_compatibility.py

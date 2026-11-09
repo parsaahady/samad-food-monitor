@@ -103,3 +103,29 @@ def test_tls_error_details_are_allowlisted():
     assert diagnostic.tls_failure_detail(ssl.SSLError("sensitive")) == "HANDSHAKE_FAILED (unknown reason)"
     assert diagnostic.tls_failure_detail(ConnectionResetError("sensitive")) == "CONNECTION_RESET"
     assert diagnostic.tls_failure_detail(TimeoutError("sensitive")) == "HANDSHAKE_TIMEOUT"
+
+
+def test_tls_compatibility_profiles_keep_certificate_checks():
+    import importlib.util
+    import pathlib
+    import ssl
+    import sys
+    import pytest
+
+    # The script also runs directly without installing the project.
+    monkey_path = pathlib.Path(diagnostic.__file__).parent
+    sys.path.insert(0, str(monkey_path))
+    try:
+        spec = importlib.util.spec_from_file_location("tls_compat", monkey_path / "samad_tls_compatibility.py")
+        module = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(module)
+    finally:
+        sys.path.remove(str(monkey_path))
+    for profile in module.PROFILES:
+        context = module.make_context(profile)
+        assert context.verify_mode == ssl.CERT_REQUIRED
+        assert context.check_hostname
+    assert module.make_context("TLS_1_2").maximum_version == ssl.TLSVersion.TLSv1_2
+    assert module.make_context("TLS_1_3").minimum_version == ssl.TLSVersion.TLSv1_3
+    with pytest.raises(ValueError):
+        module.make_context("unverified")

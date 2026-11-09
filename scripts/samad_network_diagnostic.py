@@ -76,7 +76,7 @@ def valid_release(body: bytes) -> bool:
         return False
 
 
-def probe(host: str, path: str) -> Result:
+def probe(host: str, path: str, context: ssl.SSLContext | None = None) -> Result:
     result = Result()
     start = time.monotonic()
     raw = None
@@ -103,7 +103,7 @@ def probe(host: str, path: str) -> Result:
         result.tcp = "SUCCESS"
         result.remote_ip = raw.getpeername()[0]
         stage = "TLS"
-        tls = ssl.create_default_context().wrap_socket(raw, server_hostname=host)
+        tls = (context if context is not None else ssl.create_default_context()).wrap_socket(raw, server_hostname=host)
         raw = None  # the TLS socket now owns it
         result.tls = "SUCCESS"
         stage = "HTTPS"
