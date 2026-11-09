@@ -92,32 +92,40 @@ def _norm_fa(text: str) -> str:
     return (text or "").replace("ي", "ی").replace("ك", "ک").strip()
 
 
-def is_dormitory_self_name(restaurant_name: str) -> bool:
+def is_any_dormitory_self_name(restaurant_name: str) -> bool:
     norm = _norm_fa(restaurant_name)
     if "مرکزی" in norm:
         return False
     return any(kw in norm for kw in ("خوابگاه", "کوی", "سرا"))
 
 
+def is_koy_dormitory_self_name(restaurant_name: str) -> bool:
+    """تشخیص منحصراً سلف «خوابگاه کوی» دانشگاه شهید بهشتی (و نادیده گرفتن سایر خوابگاه‌ها)."""
+    norm = _norm_fa(restaurant_name)
+    if "مرکزی" in norm:
+        return False
+    return "کوی" in norm
+
+
 def filter_meals_by_self_scope(meals: Iterable[Meal], scope: str) -> Tuple[List[Meal], str]:
     """
     جداسازی هوشمند وعده‌های غذایی بر اساس نوع سلف در دانشگاه شهید بهشتی:
-    - `dorm`    -> سلف خوابگاه (شامل کلیدواژه‌های خوابگاه / کوی / سرا)
-    - `central` -> سلف مرکزی (ابتدا دارای «مرکزی»، و در صورت نبود نام «مرکزی»، سایر سلف‌های دانشگاهی غیرخوابگاهی)
-    - `all`     -> تمام سلف‌ها یکجا
+    - `dorm`    -> فقط سلف خوابگاه کوی (شامل کلیدواژه «کوی»)
+    - `central` -> سلف مرکزی (ابتدا دارای «مرکزی»، و در صورت نبود نام «مرکزی»، سلف‌های دانشگاهی غیرخوابگاهی)
+    - `all`     -> تمام سلف‌های مجاز یکجا
     """
     all_list = list(meals)
     clean_scope = (scope or "all").strip().lower()
 
     if clean_scope == "dorm":
-        matched = [m for m in all_list if is_dormitory_self_name(m.restaurant)]
-        return matched, "🏠 منوی سلف خوابگاه"
+        matched = [m for m in all_list if is_koy_dormitory_self_name(m.restaurant)]
+        return matched, "🏠 منوی سلف خوابگاه کوی"
 
     if clean_scope == "central":
         explicit_central = [m for m in all_list if "مرکزی" in _norm_fa(m.restaurant)]
         if explicit_central:
             return explicit_central, "🏛 منوی سلف مرکزی"
-        non_dorm = [m for m in all_list if not is_dormitory_self_name(m.restaurant)]
+        non_dorm = [m for m in all_list if not is_any_dormitory_self_name(m.restaurant)]
         return non_dorm, "🏛 منوی سلف مرکزی"
 
     return all_list, "📋 منوی همه سلف‌ها"

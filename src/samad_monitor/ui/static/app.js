@@ -149,6 +149,22 @@ function renderDashboard(state) {
       : "👥 مشترکین ربات تلگرام";
   }
 
+  // نمایش وضعیت اجرای خودکار هنگام روشن شدن لپ‌تاپ ویندوز
+  const autoBtn = document.getElementById("btn-autostart-toggle");
+  if (autoBtn && state.autostart) {
+    if (!state.autostart.supported) {
+      autoBtn.textContent = "💻 اتواستارت (ویژه ویندوز)";
+    } else if (state.autostart.enabled) {
+      autoBtn.textContent = "💻 استارتاپ لپ‌تاپ: فعال ✅";
+      autoBtn.style.borderColor = "#0d9488";
+      autoBtn.style.color = "#0d9488";
+    } else {
+      autoBtn.textContent = "💻 فعال‌سازی با روشن شدن لپ‌تاپ";
+      autoBtn.style.borderColor = "";
+      autoBtn.style.color = "";
+    }
+  }
+
   // بنر آخرین خطای فنی در صورت وجود
   const errBanner = document.getElementById("error-banner");
   const lastCheck = state.stats.last_check;
@@ -201,22 +217,28 @@ function getMealBadgeClass(mealType) {
   return "meal-lunch";
 }
 
-function isDormRestaurantName(name) {
+function isAnyDormRestaurantName(name) {
   const norm = String(name || "").replace(/ي/g, "ی").replace(/ك/g, "ک");
   if (norm.includes("مرکزی")) return false;
   return norm.includes("خوابگاه") || norm.includes("کوی") || norm.includes("سرا");
 }
 
+function isKoyDormRestaurantName(name) {
+  const norm = String(name || "").replace(/ي/g, "ی").replace(/ك/g, "ک");
+  if (norm.includes("مرکزی")) return false;
+  return norm.includes("کوی");
+}
+
 function matchesSelfScope(restaurantName, scope, allRestaurants) {
   if (!scope || scope === "ALL") return true;
   const norm = String(restaurantName || "").replace(/ي/g, "ی").replace(/ك/g, "ک");
-  if (scope === "DORM") return isDormRestaurantName(norm);
+  if (scope === "DORM") return isKoyDormRestaurantName(norm);
   if (scope === "CENTRAL") {
     const hasExplicitCentral = (allRestaurants || []).some((r) =>
       String(r || "").replace(/ي/g, "ی").replace(/ك/g, "ک").includes("مرکزی")
     );
     if (hasExplicitCentral) return norm.includes("مرکزی");
-    return !isDormRestaurantName(norm);
+    return !isAnyDormRestaurantName(norm);
   }
   return true;
 }
@@ -564,6 +586,25 @@ document.addEventListener("DOMContentLoaded", async () => {
     const res = await apiPost("api/test-notify");
     showToast(res.message, !res.ok);
   });
+
+  // دکمه تک‌کلیکی روشن/خاموش کردن اجرای خودکار هنگام روشن شدن لپ‌تاپ ویندوز
+  const btnAutoStart = document.getElementById("btn-autostart-toggle");
+  if (btnAutoStart) {
+    btnAutoStart.addEventListener("click", async () => {
+      const currentlyEnabled = Boolean(currentState?.autostart?.enabled);
+      if (currentlyEnabled) {
+        if (!confirm("آیا می‌خواهید اجرای خودکار هنگام روشن شدن لپ‌تاپ غیرفعال شود؟")) return;
+      }
+      btnAutoStart.disabled = true;
+      try {
+        const res = await apiPost("api/autostart", { enable: !currentlyEnabled });
+        showToast(res.message, !res.ok);
+        await refreshState();
+      } finally {
+        btnAutoStart.disabled = false;
+      }
+    });
+  }
 
   // دکمه عیب‌یاب سلامت (Doctor)
   document.getElementById("btn-doctor").addEventListener("click", async () => {

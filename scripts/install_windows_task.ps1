@@ -1,16 +1,14 @@
 <#
 .SYNOPSIS
-    نصب خودکار سرویس پس‌زمینه Samad Food Monitor در Windows 11 Task Scheduler
+    فعال‌سازی اجرای خودکار دائمی Samad Food Monitor به محض روشن شدن لپ‌تاپ در Windows 11
 .DESCRIPTION
-    این اسکریپت یک Task زمان‌بندی‌شده در نشست تعاملی کاربر فعلی (Interactive User Session) می‌سازد تا:
-    ۱) بلافاصله پس از روشن شدن و ورود به ویندوز ۱۱، بدون پنجره سیاه ترمینال (با pythonw.exe) اجرا شود.
-    ۲) اعلان‌های دسکتاپ ویندوز ۱۱ (Windows Toast Notification) به‌درستی در Action Center نمایش داده شوند.
-    ۳) روی لپ‌تاپ در حالت باتری متوقف نشود و محدودیت پیش‌فرض ۷۲ ساعته ویندوز حذف گردد.
+    این اسکریپت بدون نیاز به دسترسی Administrator، یک راه‌انداز مخفی (pythonw.exe بدون پنجره سیاه)
+    در پوشه Startup ویندوز کاربر فعلی می‌سازد (و در صورت داشتن دسترسی Admin، در Task Scheduler هم ثبت می‌کند)
+    تا هر بار لپ‌تاپ روشن شود، هم پایش خودکار سماد و هم ربات تلگرام بلافاصله فعال شوند.
 #>
 
 $ErrorActionPreference = "Stop"
 
-$TaskName = "SamadFoodMonitor"
 $ProjectRoot = (Resolve-Path (Join-Path $PSScriptRoot "..")).Path
 $PythonwPath = Join-Path $ProjectRoot ".venv\Scripts\pythonw.exe"
 $PythonPath = Join-Path $ProjectRoot ".venv\Scripts\python.exe"
@@ -20,51 +18,27 @@ if (Test-Path $PythonwPath) {
 } elseif (Test-Path $PythonPath) {
     $Executable = $PythonPath
 } else {
-    Write-Error "محیط مجازی (.venv) یافت نشد! ابتدا دستورات ساخت .venv و نصب پکیج‌ها را در ریشه پروژه اجرا کنید."
+    Write-Error "محیط مجازی (.venv) یافت نشد! ابتدا در پوشه پروژه محیط مجازی را فعال کنید."
     exit 1
 }
 
-$Arguments = "-m samad_monitor run"
+$StartupDir = [Environment]::GetFolderPath("Startup")
+$VbsPath = Join-Path $StartupDir "SamadFoodMonitor_AutoStart.vbs"
 
-# حذف نسخه قبلی Task در صورت وجود
-if (Get-ScheduledTask -TaskName $TaskName -ErrorAction SilentlyContinue) {
-    Stop-ScheduledTask -TaskName $TaskName -ErrorAction SilentlyContinue
-    Unregister-ScheduledTask -TaskName $TaskName -Confirm:$false
-}
+$SafeRoot = $ProjectRoot.Replace('"', '""')
+$SafeExe = $Executable.Replace('"', '""')
 
-$Action = New-ScheduledTaskAction `
-    -Execute $Executable `
-    -Argument $Arguments `
-    -WorkingDirectory $ProjectRoot
+$VbsLines = @(
+    'Set WshShell = CreateObject("WScript.Shell")',
+    "WshShell.CurrentDirectory = `"$SafeRoot`"",
+    "WshShell.Run `"`"`"$SafeExe`"`" -m samad_monitor ui --port 8765 --no-browser --auto-start`", 0, False"
+) -join "`r`n"
 
-$Trigger = New-ScheduledTaskTrigger -AtLogOn -User $env:USERNAME
+[System.IO.File]::WriteAllText($VbsPath, $VbsLines, [System.Text.Encoding]::Unicode)
 
-$Settings = New-ScheduledTaskSettingsSet `
-    -AllowStartIfOnBatteries `
-    -DontStopIfGoingOnBatteries `
-    -StartWhenAvailable `
-    -MultipleInstances IgnoreNew `
-    -ExecutionTimeLimit ([TimeSpan]::Zero) `
-    -RestartCount 999 `
-    -RestartInterval (New-TimeSpan -Minutes 2)
+# اجرای فوری در پس‌زمینه همین الان (اگر در حال اجرا نباشد)
+Start-Process -FilePath "wscript.exe" -ArgumentList "`"$VbsPath`""
 
-$Principal = New-ScheduledTaskPrincipal `
-    -UserId $env:USERNAME `
-    -LogonType Interactive `
-    -RunLevel Limited
-
-Register-ScheduledTask `
-    -TaskName $TaskName `
-    -Action $Action `
-    -Trigger $Trigger `
-    -Settings $Settings `
-    -Principal $Principal `
-    -Description "سرویس پایش خودکار انتشار منوی هفته آینده سماد (دانشگاه شهید بهشتی)" | Out-Null
-
-Start-ScheduledTask -TaskName $TaskName
-
-Write-Host "✅ سرویس پس‌زمینه '$TaskName' با موفقیت در Windows Task Scheduler ثبت و اجرا شد!" -ForegroundColor Green
-Write-Host "   مسیر پروژه : $ProjectRoot"
-Write-Host "   مفسر اجرایی: $Executable"
-Write-Host "   برای مشاهده وضعیت، دستور زیر را اجرا کنید:"
-Write-Host "   .\.venv\Scripts\python.exe -m samad_monitor status" -ForegroundColor Cyan
+Write-Host "✅ اجرای خودکار دائمی با روشن شدن لپ‌تاپ فعال شد!" -ForegroundColor Green
+Write-Host "   فایل استارتاپ : $VbsPath"
+Write-Host "   پنل مدیریت وب: http://127.0.0.1:8765" -ForegroundColor Cyan

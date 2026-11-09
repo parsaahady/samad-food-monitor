@@ -537,6 +537,20 @@ class SamadClient:
                 continue
 
             name = " ".join(str(item.get("name") or f"سلف {self_id}").strip().split())
+            norm_name = name.replace("ي", "ی").replace("ك", "ک")
+            # در بین خوابگاه‌های دانشگاه شهید بهشتی، فقط «خوابگاه کوی» مدنظر است (مگر اینکه کاربر فیلتر دستی داده باشد)
+            has_custom_filter = bool(
+                not ignore_user_filter
+                and (self.config.samad_self_ids or self.config.samad_self_name_filter)
+            )
+            if (
+                not has_custom_filter
+                and ("خوابگاه" in norm_name or "سرا" in norm_name)
+                and "کوی" not in norm_name
+                and "مرکزی" not in norm_name
+            ):
+                continue
+
             free_rest = bool(item.get("freeRestaurant"))
             food_selfs.append(
                 SelfServiceInfo(

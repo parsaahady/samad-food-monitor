@@ -45,6 +45,36 @@ def test_env_writer_blocks_forbidden_password_keys(tmp_path: Path) -> None:
         update_env_file(env_file, {"SAMAD_PASSWORD": "secret"})
 
 
+def test_windows_startup_vbs_creation_and_disable(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """تست ساخت و حذف راه‌انداز مخفی Startup ویندوز ۱۱ هنگام روشن شدن لپ‌تاپ."""
+    fake_appdata = tmp_path / "AppData" / "Roaming"
+    monkeypatch.setenv("APPDATA", str(fake_appdata))
+
+    cfg = _make_test_config(tmp_path)
+    controller = DashboardController(config=cfg)
+    try:
+        st0 = controller.get_autostart_status(platform_override="win32")
+        assert st0["supported"] is True
+        assert st0["enabled"] is False
+
+        res_on = controller.set_windows_autostart(enable=True, port=8765, platform_override="win32")
+        assert res_on["ok"] is True
+        assert res_on["enabled"] is True
+        vbs_file = Path(res_on["startup_path"])
+        assert vbs_file.is_file()
+        vbs_text = vbs_file.read_bytes().decode("utf-8", errors="ignore")
+        assert "--no-browser --auto-start" in vbs_text
+        assert controller.is_scheduler_running is True
+
+        res_off = controller.set_windows_autostart(enable=False, platform_override="win32")
+        assert res_off["ok"] is True
+        assert not vbs_file.exists()
+    finally:
+        controller.shutdown()
+
+
 def test_ui_http_server_endpoints_and_token_masking(tmp_path: Path) -> None:
     env_file = tmp_path / ".env"
     env_file.write_text(

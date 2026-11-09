@@ -57,12 +57,12 @@ BOT_COMMANDS_SPEC: List[Dict[str, str]] = [
 
 
 def build_self_selector_inline_keyboard(week_key: str) -> Dict[str, Any]:
-    """ساخت دو دکمه شیشه‌ای اصلی (منوی سلف خوابگاه / منوی سلف مرکزی) + گزینه همه سلف‌ها."""
+    """ساخت دو دکمه شیشه‌ای اصلی (منوی سلف خوابگاه کوی / منوی سلف مرکزی) + گزینه همه سلف‌ها."""
     wk = week_key if week_key in {"prev", "curr", "next"} else "prev"
     return {
         "inline_keyboard": [
             [
-                {"text": "🏠 منوی سلف خوابگاه", "callback_data": f"menu:{wk}:dorm"},
+                {"text": "🏠 منوی سلف خوابگاه کوی", "callback_data": f"menu:{wk}:dorm"},
                 {"text": "🏛 منوی سلف مرکزی", "callback_data": f"menu:{wk}:central"},
             ],
             [
@@ -73,16 +73,16 @@ def build_self_selector_inline_keyboard(week_key: str) -> Dict[str, Any]:
 
 
 def build_post_menu_switch_keyboard(week_key: str, current_scope: str) -> Dict[str, Any]:
-    """دکمه‌های شیشه‌ای زیر پیام منو برای جابه‌جایی سریع بین سلف خوابگاه و سلف مرکزی."""
+    """دکمه‌های شیشه‌ای زیر پیام منو برای جابه‌جایی سریع بین سلف خوابگاه کوی و سلف مرکزی."""
     wk = week_key if week_key in {"prev", "curr", "next"} else "prev"
     w_label = WEEK_LABELS_FA.get(wk, "هفته")
     row1: List[Dict[str, str]] = []
     if current_scope == "dorm":
         row1.append({"text": f"🏛 منوی سلف مرکزی ({w_label})", "callback_data": f"menu:{wk}:central"})
     elif current_scope == "central":
-        row1.append({"text": f"🏠 منوی سلف خوابگاه ({w_label})", "callback_data": f"menu:{wk}:dorm"})
+        row1.append({"text": f"🏠 منوی سلف خوابگاه کوی ({w_label})", "callback_data": f"menu:{wk}:dorm"})
     else:
-        row1.append({"text": "🏠 فقط سلف خوابگاه", "callback_data": f"menu:{wk}:dorm"})
+        row1.append({"text": "🏠 فقط خوابگاه کوی", "callback_data": f"menu:{wk}:dorm"})
         row1.append({"text": "🏛 فقط سلف مرکزی", "callback_data": f"menu:{wk}:central"})
 
     rows: List[List[Dict[str, str]]] = [row1]
@@ -867,7 +867,7 @@ class TelegramNotificationChannel(NotificationChannel):
                 action, wk, scope = parts[0], parts[1], parts[2]
                 force = action == "refresh"
                 scope_fa = (
-                    "سلف خوابگاه"
+                    "سلف خوابگاه کوی"
                     if scope == "dorm"
                     else ("سلف مرکزی" if scope == "central" else "همه سلف‌ها")
                 )

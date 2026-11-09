@@ -143,7 +143,12 @@ def _build_parser() -> argparse.ArgumentParser:
     ui_parser.add_argument(
         "--auto-start",
         action="store_true",
-        help="روشن کردن خودکار زمان‌بند پایش به محض بالا آمدن پنل گرافیکی",
+        help="روشن کردن قطعی زمان‌بند پایش به محض بالا آمدن پنل گرافیکی",
+    )
+    ui_parser.add_argument(
+        "--no-auto-start",
+        action="store_true",
+        help="عدم روشن شدن خودکار پایش هنگام بالا آمدن پنل",
     )
     return parser
 
@@ -472,6 +477,7 @@ def main(argv: Optional[List[str]] = None) -> int:
             port=args.port,
             open_browser=not args.no_browser,
             auto_start_scheduler=args.auto_start,
+            disable_auto_start=args.no_auto_start,
             env_file_override=args.env_file,
         )
 

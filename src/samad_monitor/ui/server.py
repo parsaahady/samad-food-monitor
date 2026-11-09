@@ -11,6 +11,8 @@ from pathlib import Path
 from typing import Any, Optional
 from urllib.parse import parse_qs, urlparse
 
+import httpx
+
 from samad_monitor.config import AppConfig
 from samad_monitor.ui.controller import DashboardController
 
@@ -131,6 +133,10 @@ def create_http_server(
                 self._send_json(controller.get_subscribers_state())
                 return
 
+            if path == "/api/autostart":
+                self._send_json(controller.get_autostart_status())
+                return
+
             self._send_json({"ok": False, "message": "مسیر یافت نشد."}, status=404)
 
         def do_POST(self) -> None:  # noqa: N802
@@ -197,6 +203,16 @@ def create_http_server(
                     self._send_json(controller.update_auto_subscribe_settings(body))
                     return
 
+                if path == "/api/autostart":
+                    body = self._read_json_body()
+                    self._send_json(
+                        controller.set_windows_autostart(
+                            enable=bool(body.get("enable", True)),
+                            port=int(body.get("port") or port or 8765),
+                        )
+                    )
+                    return
+
                 self._send_json({"ok": False, "message": "مسیر نامعتبر است."}, status=404)
             except Exception as exc:
                 logger.warning("خطا در پردازش درخواست UI (%s): %s", path, exc)
@@ -211,16 +227,44 @@ def run_ui_server(
     port: int = 8765,
     open_browser: bool = True,
     auto_start_scheduler: bool = False,
+    disable_auto_start: bool = False,
     env_file_override: Optional[Path] = None,
 ) -> int:
-    """راه‌اندازی پنل وب محلی و باز کردن مرورگر کاربر."""
+    """راه‌اندازی پنل وب محلی و باز کردن مرورگر کاربر (با تشخیص هوشمند اجرای قبلی در پس‌زمینه)."""
+    display_host = "127.0.0.1" if host == "0.0.0.0" else host
+
+    # اگر سرویس استارتاپ پس‌زمینه هم‌اکنون روی همین پورت در حال اجراست، بدون تداخل فقط پنل را باز کن!
+    if port > 0 and host in {"127.0.0.1", "localhost"}:
+        probe_url = f"http://127.0.0.1:{port}"
+        try:
+            with httpx.Client(timeout=0.6, trust_env=False) as probe:
+                r = probe.get(f"{probe_url}/api/state")
+                if r.status_code == 200 and isinstance(r.json(), dict) and "university" in r.json():
+                    if not disable_auto_start:
+                        try:
+                            probe.post(f"{probe_url}/api/scheduler/start", json={})
+                        except Exception:
+                            pass
+                    print("======================================================================")
+                    print("✅ سرویس پایش خودکار سماد هم‌اکنون در پس‌زمینه فعال و در حال اجراست!")
+                    print(f"🌐 آدرس پنل مدیریت : {probe_url}")
+                    print("======================================================================")
+                    if open_browser:
+                        try:
+                            webbrowser.open(probe_url)
+                        except Exception:
+                            pass
+                    return 0
+        except Exception:
+            pass
+
     controller = DashboardController(config=config, env_file_override=env_file_override)
-    if auto_start_scheduler:
+    has_saved_session = controller.client.session_manager.load().has_credentials
+    if not disable_auto_start and (auto_start_scheduler or has_saved_session):
         controller.start_background_scheduler()
 
     server = create_http_server(controller=controller, host=host, port=port)
     actual_port = server.server_port
-    display_host = "127.0.0.1" if host == "0.0.0.0" else host
     local_url = f"http://{display_host}:{actual_port}"
 
     print("======================================================================")

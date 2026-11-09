@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import logging
+import os
 import socket
 import sys
 import threading
@@ -317,6 +318,7 @@ class DashboardController:
                     "enabled_count": len(self.repository.list_telegram_subscribers(only_enabled=True)),
                     "total_count": len(self.repository.list_telegram_subscribers(only_enabled=False)),
                 },
+                "autostart": self.get_autostart_status(),
                 "menu": {
                     "published": bool(selected_menu and selected_menu.meals),
                     "is_demo": False,
@@ -466,9 +468,10 @@ class DashboardController:
                 self.repository.set_runtime_value("active_session_fp", session_data.fingerprint)
                 if session_data.username:
                     self.repository.set_runtime_value("last_username", session_data.username)
+            self.start_background_scheduler()
             return {
                 "ok": True,
-                "message": f"ورود با موفقیت انجام شد و نشست ({session_data.university_label}) ذخیره گردید!",
+                "message": f"ورود با موفقیت انجام شد و پایش خودکار ({session_data.university_label}) روشن گردید!",
                 "username": session_data.username or "",
             }
         except Exception as exc:
@@ -1121,5 +1124,108 @@ class DashboardController:
                 else "عضویت خودکار غیرفعال شد (افزودن فقط با تایید شما از پنل انجام می‌شود)."
             ),
         }
+
+    # ------------------------------------------------------------------
+    # مدیریت اجرای خودکار با روشن شدن لپ‌تاپ در Windows 11 (بدون نیاز به Run as Admin)
+    # ------------------------------------------------------------------
+    def _resolve_windows_startup_vbs_path(self, platform_override: Optional[str] = None) -> Optional[Path]:
+        plat = platform_override or sys.platform
+        if plat != "win32":
+            return None
+        appdata = os.environ.get("APPDATA") or ""
+        if not appdata:
+            return None
+        return (
+            Path(appdata)
+            / "Microsoft"
+            / "Windows"
+            / "Start Menu"
+            / "Programs"
+            / "Startup"
+            / "SamadFoodMonitor_AutoStart.vbs"
+        )
+
+    def get_autostart_status(self, platform_override: Optional[str] = None) -> Dict[str, Any]:
+        vbs_path = self._resolve_windows_startup_vbs_path(platform_override=platform_override)
+        if vbs_path is None:
+            return {
+                "supported": False,
+                "enabled": False,
+                "startup_path": "",
+                "label": "مخصوص ویندوز ۱۱",
+            }
+        enabled = vbs_path.is_file()
+        return {
+            "supported": True,
+            "enabled": enabled,
+            "startup_path": str(vbs_path),
+            "label": "فعال هنگام روشن شدن لپ‌تاپ ✅" if enabled else "غیرفعال در استارتاپ ویندوز",
+        }
+
+    def set_windows_autostart(
+        self,
+        enable: bool,
+        port: int = 8765,
+        platform_override: Optional[str] = None,
+    ) -> Dict[str, Any]:
+        vbs_path = self._resolve_windows_startup_vbs_path(platform_override=platform_override)
+        if vbs_path is None:
+            return {
+                "ok": False,
+                "enabled": False,
+                "message": "تنظیم تک‌کلیکی استارتاپ مخصوص سیستم‌عامل ویندوز است (در لینوکس از اسکریپت install_linux_systemd.sh استفاده کنید).",
+            }
+
+        try:
+            if not enable:
+                if vbs_path.is_file():
+                    vbs_path.unlink()
+                return {
+                    "ok": True,
+                    "enabled": False,
+                    "startup_path": str(vbs_path),
+                    "message": "اجرای خودکار هنگام روشن شدن ویندوز غیرفعال شد.",
+                }
+
+            vbs_path.parent.mkdir(parents=True, exist_ok=True)
+            project_root = self.config.base_dir.resolve()
+            venv_pythonw = project_root / ".venv" / "Scripts" / "pythonw.exe"
+            sys_pythonw = Path(sys.executable).with_name("pythonw.exe")
+            if venv_pythonw.is_file():
+                exe_path = venv_pythonw
+            elif sys_pythonw.is_file():
+                exe_path = sys_pythonw
+            else:
+                exe_path = Path(sys.executable)
+
+            safe_root = str(project_root).replace('"', '""')
+            safe_exe = str(exe_path).replace('"', '""')
+            safe_port = max(1024, min(int(port or 8765), 65535))
+
+            vbs_content = (
+                'Set WshShell = CreateObject("WScript.Shell")\r\n'
+                f'WshShell.CurrentDirectory = "{safe_root}"\r\n'
+                f'WshShell.Run """{safe_exe}"" -m samad_monitor ui --port {safe_port} --no-browser --auto-start", 0, False\r\n'
+            )
+            try:
+                vbs_content.encode("ascii")
+                vbs_path.write_bytes(vbs_content.encode("ascii"))
+            except UnicodeEncodeError:
+                # پشتیبانی کامل wscript ویندوز از مسیرهای فارسی/یونیکد با UTF-16LE BOM
+                vbs_path.write_bytes(vbs_content.encode("utf-16"))
+
+            # هم‌زمان پایش خودکار همین الان هم روشن شود
+            self.start_background_scheduler()
+
+            return {
+                "ok": True,
+                "enabled": True,
+                "startup_path": str(vbs_path),
+                "message": "✅ اجرای خودکار دائمی فعال شد! از این پس هر بار لپ‌تاپ روشن شود، پایش سماد و ربات تلگرام بدون هیچ پنجره مزاحمی در پس‌زمینه شروع به کار می‌کنند.",
+            }
+        except Exception as exc:
+            logger.exception("خطا در تنظیم استارتاپ ویندوز")
+            return {"ok": False, "enabled": False, "message": f"خطا در ثبت استارتاپ ویندوز: {exc}"}
+
 
 

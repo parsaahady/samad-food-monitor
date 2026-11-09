@@ -8,6 +8,5 @@ if not exist ".venv\Scripts\python.exe" (
     exit /b 1
 )
 
-echo در حال باز کردن پنل گرافیکی مدیریت سماد (دانشگاه شهید بهشتی)...
-.\.venv\Scripts\python.exe -m samad_monitor ui --port 8765
-pause
+echo در حال باز کردن پنل گرافیکی و فعال سازی پایش خودکار سماد (دانشگاه شهید بهشتی)...
+.\.venv\Scripts\python.exe -m samad_monitor ui --port 8765 --auto-start
