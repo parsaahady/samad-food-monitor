@@ -142,6 +142,11 @@ def create_http_server(
                     self._send_json(controller.trigger_check_now())
                     return
 
+                if path == "/api/fetch-week":
+                    body = self._read_json_body()
+                    self._send_json(controller.trigger_fetch_week(body))
+                    return
+
                 if path == "/api/login":
                     self._send_json(controller.trigger_interactive_login())
                     return

@@ -3,10 +3,11 @@
 from __future__ import annotations
 
 import logging
+import threading
 import time
 from dataclasses import dataclass
 from datetime import datetime
-from typing import List, Optional
+from typing import List, Optional, Tuple
 
 from samad_monitor.browser.client import SamadClient
 from samad_monitor.config import AppConfig
@@ -24,7 +25,12 @@ from samad_monitor.notifications.formatter import (
     format_session_expired_notification,
 )
 from samad_monitor.notifications.manager import DeliveryReport, NotificationManager
-from samad_monitor.utils.date_utils import get_next_week_range
+from samad_monitor.utils.date_utils import (
+    get_current_week_range,
+    get_next_week_range,
+    get_previous_week_range,
+    now_tehran,
+)
 
 logger = logging.getLogger("samad_monitor.monitor")
 
@@ -71,6 +77,11 @@ class SamadFoodMonitor:
             config, repository=self.repository
         )
         self.detector = detector or MenuDetector(tz_name=config.timezone_name)
+        self._on_demand_lock = threading.Lock()
+
+        tg_ch = self.notification_manager.get_telegram_channel()
+        if tg_ch is not None and hasattr(tg_ch, "set_week_menu_provider"):
+            tg_ch.set_week_menu_provider(self.fetch_week_on_demand)
 
     def check_once(self, reference_dt: Optional[datetime] = None) -> CheckExecutionSummary:
         """اجرای یک نوبت کامل بررسی وضعیت منوی هفته آینده."""
@@ -344,3 +355,93 @@ class SamadFoodMonitor:
             source=fetch_res.source,
             menu=saved_menu,
         )
+
+    def fetch_week_on_demand(
+        self,
+        week_key: str = "prev",
+        force_refresh: bool = False,
+        reference_dt: Optional[datetime] = None,
+    ) -> Tuple[WeekRange, Optional[Menu], CheckStatus, str]:
+        """
+        واکشی هوشمند و کش‌شده منوی «هفته قبل» (`prev`)، «هفته جاری» (`curr`) یا «هفته آینده» (`next`)
+        برای پاسخ‌گویی سریع به دکمه‌های ربات تلگرام و پنل وب (همه سلف‌ها: خوابگاه و مرکزی).
+        """
+        ref = reference_dt or now_tehran(tz_name=self.config.timezone_name)
+        clean_key = (week_key or "prev").strip().lower()
+        if clean_key == "prev":
+            target_week = get_previous_week_range(ref, tz_name=self.config.timezone_name)
+        elif clean_key == "curr":
+            target_week = get_current_week_range(ref, tz_name=self.config.timezone_name)
+        else:
+            clean_key = "next"
+            target_week = get_next_week_range(ref, tz_name=self.config.timezone_name)
+
+        with self._on_demand_lock:
+            cached = self.repository.get_menu_by_week(target_week.start_iso)
+
+            if clean_key == "next":
+                # برای هفته آینده از کش دیتابیس بخوان تا چرخه اعلان خودکار دست‌کاری نشود
+                if cached and cached.meals and not force_refresh:
+                    return (
+                        target_week,
+                        cached,
+                        CheckStatus.MENU_PUBLISHED,
+                        "از آخرین بررسی ذخیره‌شده در دیتابیس",
+                    )
+                if force_refresh:
+                    summary = self.check_once(reference_dt=ref)
+                    return (target_week, summary.menu, summary.status, summary.message)
+                return (
+                    target_week,
+                    None,
+                    CheckStatus.MENU_NOT_PUBLISHED,
+                    "منوی هفته آینده هنوز در آخرین بررسی منتشر نشده است.",
+                )
+
+            # برای هفته قبل (prev) و هفته جاری (curr): کش هوشمند دیتابیس + واکشی زنده از سماد بدون فیلتر سلف
+            cache_flag_key = f"unfiltered_week_cached:{target_week.start_iso}"
+            last_cached_ts_raw = self.repository.get_runtime_value(cache_flag_key)
+
+            if cached and cached.meals and last_cached_ts_raw and not force_refresh:
+                if clean_key == "prev":
+                    # منوی هفته گذشته تغییر نمی‌کند؛ یک بار واکشی کافی است
+                    return (target_week, cached, CheckStatus.MENU_PUBLISHED, "از حافظه کش دیتابیس")
+                try:
+                    age_sec = time.time() - float(last_cached_ts_raw)
+                    if age_sec < 1800:
+                        return (
+                            target_week,
+                            cached,
+                            CheckStatus.MENU_PUBLISHED,
+                            "از حافظه کش دیتابیس",
+                        )
+                except ValueError:
+                    pass
+
+            logger.info(
+                "واکشی درخواستی منوی هفته %s (%s تا %s) برای همه سلف‌ها (خوابگاه و مرکزی)...",
+                clean_key,
+                target_week.start_iso,
+                target_week.end_iso,
+            )
+            fetch_res = self.client.fetch_week_menu(
+                target_week, ignore_user_self_filter=True
+            )
+
+            if fetch_res.status == CheckStatus.MENU_PUBLISHED and fetch_res.meals:
+                outcome = self.detector.evaluate(
+                    week_range=target_week,
+                    current_meals=fetch_res.meals,
+                    previous_menu=None,
+                    source=fetch_res.source,
+                )
+                if outcome.menu is not None:
+                    saved = self.repository.save_menu(outcome.menu)
+                    self.repository.set_runtime_value(cache_flag_key, str(int(time.time())))
+                    return (target_week, saved, CheckStatus.MENU_PUBLISHED, fetch_res.message)
+
+            if cached and cached.meals:
+                return (target_week, cached, CheckStatus.MENU_PUBLISHED, "از آرشیو ذخیره‌شده دیتابیس")
+
+            return (target_week, None, fetch_res.status, fetch_res.message)
+

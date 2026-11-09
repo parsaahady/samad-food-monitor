@@ -514,7 +514,9 @@ class SamadClient:
 
         return resp, data, session
 
-    def _filter_food_selfs(self, raw_selfs: Any) -> List[SelfServiceInfo]:
+    def _filter_food_selfs(
+        self, raw_selfs: Any, ignore_user_filter: bool = False
+    ) -> List[SelfServiceInfo]:
         """استخراج سلف‌های تغذیه (`NORMAL`) و اعمال فیلتر اختیاری کاربر."""
         if not isinstance(raw_selfs, list):
             raise SiteStructureChangedError("ساختار لیست سلف‌ها آرایه معتبر نیست.")
@@ -545,20 +547,23 @@ class SamadClient:
                 )
             )
 
-        if self.config.samad_self_ids:
-            allowed_ids = set(self.config.samad_self_ids)
-            food_selfs = [s for s in food_selfs if s.id in allowed_ids]
+        if not ignore_user_filter:
+            if self.config.samad_self_ids:
+                allowed_ids = set(self.config.samad_self_ids)
+                food_selfs = [s for s in food_selfs if s.id in allowed_ids]
 
-        if self.config.samad_self_name_filter:
-            food_selfs = [
-                s
-                for s in food_selfs
-                if any(tok in s.name for tok in self.config.samad_self_name_filter)
-            ]
+            if self.config.samad_self_name_filter:
+                food_selfs = [
+                    s
+                    for s in food_selfs
+                    if any(tok in s.name for tok in self.config.samad_self_name_filter)
+                ]
 
         return food_selfs
 
-    def _fetch_via_api(self, week_range: WeekRange) -> FetchResult:
+    def _fetch_via_api(
+        self, week_range: WeekRange, ignore_user_self_filter: bool = False
+    ) -> FetchResult:
         """واکشی برنامه غذایی هفته آینده از طریق API رسمی مشاهده‌شده سامانه سماد."""
         session = self.session_manager.load()
         if not session.has_credentials:
@@ -653,7 +658,9 @@ class SamadClient:
                         username=username,
                     )
 
-                food_selfs = self._filter_food_selfs(s_payload)
+                food_selfs = self._filter_food_selfs(
+                    s_payload, ignore_user_filter=ignore_user_self_filter
+                )
                 if not food_selfs:
                     return FetchResult(
                         status=CheckStatus.MENU_NOT_PUBLISHED,
@@ -783,7 +790,9 @@ class SamadClient:
     # ------------------------------------------------------------------
     # مرحله ۳: حالت پشتیبان مرورگر Headless با رهگیری Network و استخراج DOM
     # ------------------------------------------------------------------
-    def _fetch_via_browser(self, week_range: WeekRange) -> FetchResult:
+    def _fetch_via_browser(
+        self, week_range: WeekRange, ignore_user_self_filter: bool = False
+    ) -> FetchResult:
         """باز کردن صفحه رزرو غذا در حالت Headless با مسدودسازی کامل درخواست‌های تغییردهنده."""
         if not self.session_manager.exists():
             return FetchResult(
@@ -847,7 +856,10 @@ class SamadClient:
                         if "/selfs" in url and response.status == 200:
                             try:
                                 data = response.json()
-                                for s in self._filter_food_selfs(data.get("payload") or []):
+                                for s in self._filter_food_selfs(
+                                    data.get("payload") or [],
+                                    ignore_user_filter=ignore_user_self_filter,
+                                ):
                                     captured_selfs[s.id] = s
                             except Exception:
                                 pass
@@ -889,11 +901,24 @@ class SamadClient:
                         modal_self_item.click()
                         page.wait_for_timeout(1500)
 
-                    # کلیک روی دکمه «هفته بعد» در نمای دسکتاپ RTL
-                    next_week_btn = page.locator("[data-testid='next-week'], .anticon-left, svg.lucide-chevron-left").first
-                    if next_week_btn.count() > 0 and next_week_btn.is_visible():
-                        next_week_btn.click()
-                        page.wait_for_timeout(2000)
+                    # پیمایش به هفته قبل یا هفته بعد در نمای دسکتاپ RTL بر اساس هفته هدف
+                    from samad_monitor.utils.date_utils import get_current_week_range
+
+                    curr_wk = get_current_week_range(tz_name=self.config.timezone_name)
+                    if week_range.week_start < curr_wk.week_start:
+                        prev_week_btn = page.locator(
+                            "[data-testid='prev-week'], .anticon-right, svg.lucide-chevron-right"
+                        ).first
+                        if prev_week_btn.count() > 0 and prev_week_btn.is_visible():
+                            prev_week_btn.click()
+                            page.wait_for_timeout(2000)
+                    elif week_range.week_start > curr_wk.week_start:
+                        next_week_btn = page.locator(
+                            "[data-testid='next-week'], .anticon-left, svg.lucide-chevron-left"
+                        ).first
+                        if next_week_btn.count() > 0 and next_week_btn.is_visible():
+                            next_week_btn.click()
+                            page.wait_for_timeout(2000)
 
                     # ذخیره توکن‌های احتمالاً تمدیدشده توسط خود اپ React
                     context.storage_state(path=str(self.config.storage_state_path))
@@ -1013,14 +1038,20 @@ class SamadClient:
     # ------------------------------------------------------------------
     # متد اصلی عمومی برای موتور پایش
     # ------------------------------------------------------------------
-    def fetch_week_menu(self, week_range: WeekRange) -> FetchResult:
+    def fetch_week_menu(
+        self, week_range: WeekRange, ignore_user_self_filter: bool = False
+    ) -> FetchResult:
         """اجرای استراتژی انتخاب‌شده (`auto`، `api` یا `browser`) برای استخراج منوی هفته هدف."""
         strategy = self.config.samad_fetch_strategy
 
         if strategy == "browser":
-            return self._fetch_via_browser(week_range)
+            return self._fetch_via_browser(
+                week_range, ignore_user_self_filter=ignore_user_self_filter
+            )
 
-        api_result = self._fetch_via_api(week_range)
+        api_result = self._fetch_via_api(
+            week_range, ignore_user_self_filter=ignore_user_self_filter
+        )
         if strategy == "api":
             return api_result
 
@@ -1030,7 +1061,9 @@ class SamadClient:
                 "ساختار پاسخ API غیرمنتظره بود (%s)؛ تلاش پشتیبان با مرورگر Playwright Headless...",
                 api_result.message,
             )
-            browser_result = self._fetch_via_browser(week_range)
+            browser_result = self._fetch_via_browser(
+                week_range, ignore_user_self_filter=ignore_user_self_filter
+            )
             if browser_result.status in {CheckStatus.MENU_PUBLISHED, CheckStatus.MENU_NOT_PUBLISHED}:
                 return browser_result
 

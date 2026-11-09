@@ -35,6 +35,7 @@ from samad_monitor.utils.date_utils import (
     get_current_week_range,
     get_next_week_range,
     get_persian_weekday,
+    get_previous_week_range,
     is_peak_check_day,
     now_tehran,
     parse_iso_date,
@@ -171,6 +172,7 @@ class DashboardController:
     def get_dashboard_state(self, week_start_query: Optional[str] = None) -> Dict[str, Any]:
         with self._lock:
             tehran_now = now_tehran(tz_name=self.config.timezone_name)
+            prev_week = get_previous_week_range(tehran_now, tz_name=self.config.timezone_name)
             curr_week = get_current_week_range(tehran_now, tz_name=self.config.timezone_name)
             next_week = get_next_week_range(tehran_now, tz_name=self.config.timezone_name)
 
@@ -236,6 +238,12 @@ class DashboardController:
                     "is_peak_day": is_peak_check_day(tehran_now, tz_name=self.config.timezone_name),
                 },
                 "weeks": {
+                    "previous": {
+                        "start_iso": prev_week.start_iso,
+                        "end_iso": prev_week.end_iso,
+                        "jalali_range": prev_week.display_jalali_range(),
+                        "bilingual": prev_week.display_bilingual(),
+                    },
                     "current": {
                         "start_iso": curr_week.start_iso,
                         "end_iso": curr_week.end_iso,
@@ -353,14 +361,20 @@ class DashboardController:
         for day_idx, m_type, m_id, f_name, side, price in sample_specs:
             if day_idx < len(dates):
                 d = dates[day_idx]
+                is_dorm_sample = m_type in {"صبحانه", "شام"}
+                rest_name = (
+                    "سلف خوابگاه کوی پسران (پیش‌نمایش آزمایشی)"
+                    if is_dorm_sample
+                    else "سلف مرکزی ولنجک (پیش‌نمایش آزمایشی)"
+                )
                 demo_meals.append(
                     Meal(
                         date=d.isoformat(),
                         day_name=get_persian_weekday(d),
                         meal_type=m_type,
                         meal_type_id=m_id,
-                        restaurant="سلف مرکزی ولنجک (پیش‌نمایش آزمایشی)",
-                        self_id=101,
+                        restaurant=rest_name,
+                        self_id=102 if is_dorm_sample else 101,
                         is_free_restaurant=False,
                         food_name=f_name,
                         availability="OPEN",
@@ -376,9 +390,36 @@ class DashboardController:
             "status": "DEMO_PREVIEW",
             "week_bilingual": nw.display_bilingual(),
             "total_meals": len(demo_meals),
-            "restaurants": ["سلف مرکزی ولنجک (پیش‌نمایش آزمایشی)"],
+            "restaurants": [
+                "سلف خوابگاه کوی پسران (پیش‌نمایش آزمایشی)",
+                "سلف مرکزی ولنجک (پیش‌نمایش آزمایشی)",
+            ],
             "days": _serialize_week_days(nw, demo_meals),
         }
+
+    def trigger_fetch_week(self, payload: Dict[str, Any]) -> Dict[str, Any]:
+        """واکشی درخواستی منوی هفته قبل (`prev`) یا هفته جاری (`curr`) از سماد برای همه سلف‌ها (خوابگاه و مرکزی)."""
+        week_key = str(payload.get("week_key") or "prev").strip().lower()
+        force = bool(payload.get("force_refresh", False))
+        try:
+            wk_range, menu, status, msg = self.monitor.fetch_week_on_demand(
+                week_key=week_key, force_refresh=force
+            )
+            ok = status == CheckStatus.MENU_PUBLISHED and bool(menu and menu.meals)
+            return {
+                "ok": ok,
+                "status": status.value,
+                "week_start": wk_range.start_iso,
+                "meals_count": len(menu.meals) if menu else 0,
+                "message": (
+                    f"منوی {('هفته قبل' if week_key == 'prev' else 'هفته جاری')} ({len(menu.meals)} گزینه غذا در سلف خوابگاه/مرکزی) آماده شد!"
+                    if ok and menu
+                    else msg
+                ),
+            }
+        except Exception as exc:
+            logger.exception("خطا در واکشی درخواستی هفته %s", week_key)
+            return {"ok": False, "status": "ERROR", "message": str(exc)}
 
     # ------------------------------------------------------------------
     # عملیات‌های اجرایی یک‌کلیکی

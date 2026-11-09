@@ -177,6 +177,18 @@ function renderDashboard(state) {
   });
   weekSel.value = prevVal;
 
+  // عنوان پویا بر اساس هفته انتخابی
+  const boardTitle = document.getElementById("board-week-title");
+  if (boardTitle && state.weeks) {
+    if (state.weeks.selected.start_iso === state.weeks.previous?.start_iso) {
+      boardTitle.textContent = "📅 برنامه غذایی هفته قبل";
+    } else if (state.weeks.selected.start_iso === state.weeks.current?.start_iso) {
+      boardTitle.textContent = "📆 برنامه غذایی هفته جاری";
+    } else {
+      boardTitle.textContent = "🍽 برنامه غذایی هفته آینده";
+    }
+  }
+
   if (!demoMenuData) {
     renderMenuBoard(state.menu, state.weeks.selected.bilingual);
   }
@@ -187,6 +199,26 @@ function getMealBadgeClass(mealType) {
   if (mealType.includes("صبحانه") || mealType.includes("سحری")) return "meal-breakfast";
   if (mealType.includes("شام") || mealType.includes("افطار")) return "meal-dinner";
   return "meal-lunch";
+}
+
+function isDormRestaurantName(name) {
+  const norm = String(name || "").replace(/ي/g, "ی").replace(/ك/g, "ک");
+  if (norm.includes("مرکزی")) return false;
+  return norm.includes("خوابگاه") || norm.includes("کوی") || norm.includes("سرا");
+}
+
+function matchesSelfScope(restaurantName, scope, allRestaurants) {
+  if (!scope || scope === "ALL") return true;
+  const norm = String(restaurantName || "").replace(/ي/g, "ی").replace(/ك/g, "ک");
+  if (scope === "DORM") return isDormRestaurantName(norm);
+  if (scope === "CENTRAL") {
+    const hasExplicitCentral = (allRestaurants || []).some((r) =>
+      String(r || "").replace(/ي/g, "ی").replace(/ك/g, "ک").includes("مرکزی")
+    );
+    if (hasExplicitCentral) return norm.includes("مرکزی");
+    return !isDormRestaurantName(norm);
+  }
+  return true;
 }
 
 function renderMenuBoard(menuObj, weekLabel) {
@@ -204,6 +236,7 @@ function renderMenuBoard(menuObj, weekLabel) {
 
   const searchQuery = document.getElementById("food-search").value.trim().toLowerCase();
   const mealFilter = document.getElementById("meal-type-filter").value;
+  const selfScope = document.getElementById("self-scope-filter")?.value || "ALL";
 
   if (!menuObj.published) {
     emptyCard.classList.remove("hidden");
@@ -216,6 +249,7 @@ function renderMenuBoard(menuObj, weekLabel) {
 
   (menuObj.days || []).forEach((day) => {
     const filteredMeals = (day.meals || []).filter((m) => {
+      if (!matchesSelfScope(m.restaurant, selfScope, menuObj.restaurants)) return false;
       if (mealFilter !== "ALL" && m.meal_type !== mealFilter) return false;
       if (searchQuery) {
         const hay = `${m.food_name} ${m.restaurant} ${m.side_dishes}`.toLowerCase();
@@ -577,6 +611,28 @@ document.addEventListener("DOMContentLoaded", async () => {
   };
   document.getElementById("food-search").addEventListener("input", rerenderActiveBoard);
   document.getElementById("meal-type-filter").addEventListener("change", rerenderActiveBoard);
+  document.getElementById("self-scope-filter").addEventListener("change", rerenderActiveBoard);
+
+  // دکمه واکشی سریع منوی هفته قبل در داشبورد
+  const btnPrevWeek = document.getElementById("btn-fetch-prev-week");
+  if (btnPrevWeek) {
+    btnPrevWeek.addEventListener("click", async () => {
+      btnPrevWeek.disabled = true;
+      btnPrevWeek.textContent = "⏳ در حال دریافت هفته قبل...";
+      try {
+        demoMenuData = null;
+        const res = await apiPost("api/fetch-week", { week_key: "prev" });
+        showToast(res.message || "بررسی هفته قبل انجام شد.", !res.ok);
+        if (res.week_start) {
+          selectedWeekIso = res.week_start;
+        }
+        await refreshState();
+      } finally {
+        btnPrevWeek.disabled = false;
+        btnPrevWeek.textContent = "📅 منوی هفته قبل";
+      }
+    });
+  }
 
   document.getElementById("saved-weeks-select").addEventListener("change", async (e) => {
     selectedWeekIso = e.target.value;

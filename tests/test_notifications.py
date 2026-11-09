@@ -268,3 +268,168 @@ def test_multi_subscriber_broadcast_fault_isolation_and_bot_commands(tmp_path) -
     amir = repo.get_telegram_subscriber("333333")
     assert amir is not None and amir["enabled"] is False
 
+
+def test_previous_week_bot_menu_with_dorm_and_central_options(tmp_path) -> None:
+    """
+    بررسی کامل قابلیت «منوی هفته قبل» در ربات تلگرام به تفکیک دو گزینه:
+    ۱. زدن دکمه «📅 منوی هفته قبل» -> نمایش دو دکمه شیشه‌ای «🏠 منوی سلف خوابگاه» و «🏛 منوی سلف مرکزی»
+    ۲. کلیک روی «🏠 منوی سلف خوابگاه» -> واکشی زنده هفته قبل از سماد، ذخیره در SQLite و نمایش فقط غذای خوابگاه
+    ۳. کلیک روی «🏛 منوی سلف مرکزی» -> خواندن آنی از کش SQLite (بدون درخواست مجدد به سماد) و نمایش فقط غذای سلف مرکزی
+    """
+    import json
+    from samad_monitor.browser.client import SamadClient
+    from samad_monitor.browser.session import SessionManager
+    from samad_monitor.monitor import SamadFoodMonitor
+    from samad_monitor.utils.date_utils import get_previous_week_range, now_tehran
+    from tests.fixtures.samad_payloads import (
+        make_fake_jwt,
+        published_programs_v2_response,
+        release_response,
+        user_profile_response,
+    )
+    from tests.test_monitor_scenarios import _make_test_config
+
+    cfg = _make_test_config(tmp_path)
+    cfg.telegram_enabled = True
+    cfg.telegram_bot_token = "123456:PREV_WEEK_BOT_TOKEN"
+    cfg.telegram_chat_ids = ["900100"]
+
+    prev_wk = get_previous_week_range(now_tehran(tz_name="Asia/Tehran"), tz_name="Asia/Tehran")
+    prev_sat = prev_wk.start_iso
+
+    samad_program_hits: List[int] = []
+
+    def _samad_handler(request: httpx.Request) -> httpx.Response:
+        path = request.url.path
+        if path.endswith("/rest/config/release"):
+            return httpx.Response(200, json=release_response())
+        if path.endswith("/rest/users/me"):
+            return httpx.Response(200, json=user_profile_response())
+        if path.endswith("/selfs"):
+            return httpx.Response(
+                200,
+                json={
+                    "type": "SUCCESS",
+                    "code": 0,
+                    "payload": [
+                        {"id": 101, "name": "سلف مرکزی برادران", "type": "NORMAL", "freeRestaurant": False},
+                        {"id": 102, "name": "سلف خوابگاه کوی پسران", "type": "NORMAL", "freeRestaurant": False},
+                    ],
+                },
+            )
+        if path.endswith("/programs/v2"):
+            sid = int(request.url.params["selfId"])
+            samad_program_hits.append(sid)
+            if sid == 102:
+                return httpx.Response(
+                    200,
+                    json=published_programs_v2_response(
+                        [{"date": prev_sat, "meal_type_id": 8, "meal_type_name": "شام", "food_name": "کتلت مخصوص خوابگاه"}]
+                    ),
+                )
+            return httpx.Response(
+                200,
+                json=published_programs_v2_response(
+                    [{"date": prev_sat, "meal_type_id": 7, "meal_type_name": "ناهار", "food_name": "زرشک پلو سلف مرکزی"}]
+                ),
+            )
+        return httpx.Response(404)
+
+    bot_sent: List[dict] = []
+    callback_answers: List[dict] = []
+    bot_updates: List[dict] = [
+        {
+            "update_id": 700,
+            "message": {
+                "chat": {"id": 900100, "first_name": "پارسا", "type": "private"},
+                "text": "📅 منوی هفته قبل",
+            },
+        }
+    ]
+
+    def _tg_handler(request: httpx.Request) -> httpx.Response:
+        if request.url.path.endswith("/getUpdates"):
+            offset = int(request.url.params.get("offset", "0") or 0)
+            batch = [u for u in bot_updates if u["update_id"] >= offset]
+            return httpx.Response(200, json={"ok": True, "result": batch})
+        if request.url.path.endswith("/answerCallbackQuery"):
+            callback_answers.append(json.loads(request.content.decode("utf-8")))
+            return httpx.Response(200, json={"ok": True, "result": True})
+        if request.url.path.endswith("/setMyCommands"):
+            return httpx.Response(200, json={"ok": True, "result": True})
+
+        payload = json.loads(request.content.decode("utf-8"))
+        bot_sent.append(payload)
+        return httpx.Response(200, json={"ok": True, "result": {"message_id": 55}})
+
+    sm = SessionManager(
+        storage_state_path=cfg.storage_state_path,
+        browser_profile_dir=cfg.browser_profile_dir,
+        samad_web_url=cfg.samad_web_url,
+        default_university_api_url=cfg.samad_university_api_url,
+    )
+    sm.save_tokens(access_token=make_fake_jwt("401243001"), refresh_token="ref-1")
+    samad_client = SamadClient(
+        config=cfg,
+        session_manager=sm,
+        http_transport=httpx.MockTransport(_samad_handler),
+    )
+
+    monitor = SamadFoodMonitor(config=cfg, client=samad_client)
+    tg = TelegramNotificationChannel(
+        bot_token=cfg.telegram_bot_token,
+        chat_id=cfg.telegram_chat_ids,
+        http_transport=httpx.MockTransport(_tg_handler),
+        repository=monitor.repository,
+        week_menu_provider=monitor.fetch_week_on_demand,
+    )
+
+    # گام ۱: کاربر روی «📅 منوی هفته قبل» می‌زند -> دو دکمه شیشه‌ای سلف خوابگاه و سلف مرکزی نمایش داده شود
+    tg.sync_bot_updates(handle_commands=True)
+    assert len(bot_sent) == 1
+    inline_rows = bot_sent[0]["reply_markup"]["inline_keyboard"]
+    first_row_texts = [btn["text"] for btn in inline_rows[0]]
+    assert "🏠 منوی سلف خوابگاه" in first_row_texts
+    assert "🏛 منوی سلف مرکزی" in first_row_texts
+
+    # گام ۲: کاربر روی «🏠 منوی سلف خوابگاه» کلیک می‌کند -> واکشی از سماد و نمایش فقط غذای خوابگاه
+    bot_sent.clear()
+    bot_updates.append(
+        {
+            "update_id": 701,
+            "callback_query": {
+                "id": "cb-dorm-1",
+                "from": {"id": 900100, "first_name": "پارسا"},
+                "message": {"chat": {"id": 900100, "type": "private"}},
+                "data": "menu:prev:dorm",
+            },
+        }
+    )
+    tg.sync_bot_updates(handle_commands=True)
+    assert len(callback_answers) == 1
+    assert set(samad_program_hits) == {101, 102}
+    assert len(bot_sent) == 1
+    assert "کتلت مخصوص خوابگاه" in bot_sent[0]["text"]
+    assert "زرشک پلو سلف مرکزی" not in bot_sent[0]["text"]
+
+    # گام ۳: کاربر روی «🏛 منوی سلف مرکزی» کلیک می‌کند -> خواندن آنی از کش دیتابیس بدون درخواست جدید به سماد!
+    prev_hits_count = len(samad_program_hits)
+    bot_sent.clear()
+    bot_updates.append(
+        {
+            "update_id": 702,
+            "callback_query": {
+                "id": "cb-central-1",
+                "from": {"id": 900100, "first_name": "پارسا"},
+                "message": {"chat": {"id": 900100, "type": "private"}},
+                "data": "menu:prev:central",
+            },
+        }
+    )
+    tg.sync_bot_updates(handle_commands=True)
+    assert len(samad_program_hits) == prev_hits_count  # صفر درخواست اضافی به سماد!
+    assert len(bot_sent) == 1
+    assert "زرشک پلو سلف مرکزی" in bot_sent[0]["text"]
+    assert "کتلت مخصوص خوابگاه" not in bot_sent[0]["text"]
+
+

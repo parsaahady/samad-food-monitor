@@ -120,6 +120,16 @@ def get_next_week_range(
     return WeekRange(week_start=next_saturday, week_end=next_friday)
 
 
+def get_previous_week_range(
+    ref: Optional[datetime | date] = None, tz_name: str = "Asia/Tehran"
+) -> WeekRange:
+    """محاسبه بازه هفته قبل دانشگاهی (شنبه هفته گذشته تا جمعه هفته گذشته) بر اساس تاریخ تهران."""
+    current = get_current_week_range(ref, tz_name)
+    prev_saturday = current.week_start - timedelta(days=7)
+    prev_friday = prev_saturday + timedelta(days=6)
+    return WeekRange(week_start=prev_saturday, week_end=prev_friday)
+
+
 def is_peak_monitoring_day(
     ref: Optional[datetime | date] = None, tz_name: str = "Asia/Tehran"
 ) -> bool:

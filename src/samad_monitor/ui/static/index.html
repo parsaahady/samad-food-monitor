@@ -148,13 +148,19 @@
         </div>
 
         <div class="filter-controls">
-          <input id="food-search" type="search" class="input-control input-sm" placeholder="جستجوی نام غذا یا سلف..." />
+          <button id="btn-fetch-prev-week" class="btn btn-outline btn-sm" type="button" title="واکشی مستقیم منوی هفته قبل از سماد (خوابگاه و مرکزی)">📅 منوی هفته قبل</button>
+          <select id="self-scope-filter" class="input-control input-sm" title="انتخاب سلف خوابگاه یا مرکزی">
+            <option value="ALL">🏢 همه سلف‌ها</option>
+            <option value="DORM">🏠 منوی سلف خوابگاه</option>
+            <option value="CENTRAL">🏛 منوی سلف مرکزی</option>
+          </select>
           <select id="meal-type-filter" class="input-control input-sm">
             <option value="ALL">همه وعده‌ها</option>
             <option value="صبحانه">فقط صبحانه</option>
             <option value="ناهار">فقط ناهار</option>
             <option value="شام">فقط شام</option>
           </select>
+          <input id="food-search" type="search" class="input-control input-sm" placeholder="جستجوی نام غذا..." />
           <select id="saved-weeks-select" class="input-control input-sm" title="انتخاب هفته">
             <option value="">هفته آینده (پیش‌فرض)</option>
           </select>
@@ -193,7 +199,7 @@
             <h3>🔗 دعوت سریع دوستان (با دکمه Start ربات)</h3>
           </div>
           <p class="muted-text">
-            دوستانتان کافی است وارد ربات تلگرام شما شوند و دکمه <strong>Start</strong> را بزنند! حتی می‌توانند با ارسال دستور <code>/menu</code> در هر لحظه آخرین منوی ذخیره‌شده را از ربات بگیرند.
+            دوستانتان کافی است وارد ربات تلگرام شما شوند و دکمه <strong>Start</strong> را بزنند! کیبورد فارسی ربات در پایین تلگرام باز می‌شود و می‌توانند با زدن <strong>«📅 منوی هفته قبل»</strong> بین دو دکمه شیشه‌ای <strong>«🏠 منوی سلف خوابگاه»</strong> و <strong>«🏛 منوی سلف مرکزی»</strong> انتخاب کنند.
           </p>
 
           <div class="invite-link-box mt-sm">
