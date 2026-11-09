@@ -1,0 +1,346 @@
+"""موتور هماهنگ‌کننده بررسی منوی هفته آینده، تشخیص تغییرات، ثبت پایدار و ارسال اعلان."""
+
+from __future__ import annotations
+
+import logging
+import time
+from dataclasses import dataclass
+from datetime import datetime
+from typing import List, Optional
+
+from samad_monitor.browser.client import SamadClient
+from samad_monitor.config import AppConfig
+from samad_monitor.database.repository import MonitorRepository
+from samad_monitor.database.sqlite import DatabaseManager
+from samad_monitor.detector import (
+    MenuDetector,
+    build_initial_event_id,
+    build_session_expired_event_id,
+)
+from samad_monitor.models import CheckStatus, EventType, Menu, WeekRange
+from samad_monitor.notifications.formatter import (
+    format_menu_available_notification,
+    format_menu_updated_notification,
+    format_session_expired_notification,
+)
+from samad_monitor.notifications.manager import DeliveryReport, NotificationManager
+from samad_monitor.utils.date_utils import get_next_week_range
+
+logger = logging.getLogger("samad_monitor.monitor")
+
+
+@dataclass
+class CheckExecutionSummary:
+    """نتیجه کامل اجرای یک نوبت بررسی منو."""
+
+    status: CheckStatus
+    target_week: WeekRange
+    meals_count: int
+    event_type: Optional[EventType]
+    event_id: Optional[str]
+    notification_sent: bool
+    delivery_report: Optional[DeliveryReport]
+    message: str
+    duration_ms: int
+    source: str = "api"
+    menu: Optional[Menu] = None
+
+
+class SamadFoodMonitor:
+    """هسته اصلی پایش سامانه سماد دانشگاه شهید بهشتی."""
+
+    def __init__(
+        self,
+        config: AppConfig,
+        repository: Optional[MonitorRepository] = None,
+        client: Optional[SamadClient] = None,
+        notification_manager: Optional[NotificationManager] = None,
+        detector: Optional[MenuDetector] = None,
+    ) -> None:
+        self.config = config
+        self.config.ensure_directories()
+
+        if repository is None:
+            db = DatabaseManager(config.db_path)
+            self.repository = MonitorRepository(db, tz_name=config.timezone_name)
+        else:
+            self.repository = repository
+
+        self.client = client or SamadClient(config=config)
+        self.notification_manager = notification_manager or NotificationManager.from_config(
+            config, repository=self.repository
+        )
+        self.detector = detector or MenuDetector(tz_name=config.timezone_name)
+
+    def check_once(self, reference_dt: Optional[datetime] = None) -> CheckExecutionSummary:
+        """اجرای یک نوبت کامل بررسی وضعیت منوی هفته آینده."""
+        started = time.monotonic()
+        next_week = get_next_week_range(reference_dt, tz_name=self.config.timezone_name)
+
+        pre_session = self.client.session_manager.load()
+        if pre_session.has_credentials:
+            session_fp = pre_session.fingerprint
+            self.repository.set_runtime_value("active_session_fp", session_fp)
+        else:
+            session_fp = (
+                self.repository.get_runtime_value("active_session_fp")
+                or pre_session.fingerprint
+            )
+
+        logger.info(
+            "شروع بررسی منوی هفته آینده (%s تا %s | %s)",
+            next_week.start_iso,
+            next_week.end_iso,
+            next_week.display_jalali_range(),
+        )
+
+        fetch_res = self.client.fetch_week_menu(next_week)
+        duration_ms = int((time.monotonic() - started) * 1000)
+        active_channels = self.notification_manager.active_channel_names()
+
+        if fetch_res.username:
+            self.repository.set_runtime_value("last_username", fetch_res.username)
+
+        # ۱) مدیریت انقضای نشست (ارسال یک‌باره هشدار + علامت‌گذاری توقف تا ورود مجدد)
+        if fetch_res.status == CheckStatus.SESSION_EXPIRED:
+            self.repository.set_runtime_value("session_status", "EXPIRED")
+            self.repository.set_runtime_value("paused_for_relogin", "true")
+
+            exp_event_id = build_session_expired_event_id(session_fp)
+            notif_sent = False
+            report: Optional[DeliveryReport] = None
+
+            if not self.repository.is_event_fully_delivered(exp_event_id, active_channels):
+                already = self.repository.get_delivered_channels(exp_event_id)
+                msg_obj = format_session_expired_notification(
+                    event_id=exp_event_id,
+                    university_label=self.config.samad_university_label,
+                    reason=fetch_res.message,
+                )
+                report = self.notification_manager.dispatch(
+                    msg_obj, already_delivered_channels=already
+                )
+                self.repository.record_event_delivery(
+                    event_id=exp_event_id,
+                    event_type=EventType.SESSION_EXPIRED,
+                    week_start=None,
+                    succeeded_channels=report.succeeded,
+                    failed_channels=report.failed.keys(),
+                    required_channels=active_channels,
+                )
+                notif_sent = bool(report.succeeded)
+
+            self.repository.record_check_run(
+                target_week_start=next_week.start_iso,
+                target_week_end=next_week.end_iso,
+                status=CheckStatus.SESSION_EXPIRED,
+                source=fetch_res.source,
+                meals_count=0,
+                duration_ms=duration_ms,
+                message=fetch_res.message,
+                event_id=exp_event_id if notif_sent else None,
+                http_status=fetch_res.http_status,
+                samad_code=fetch_res.samad_code,
+            )
+            logger.warning("نشست کاربری منقضی شده است: %s", fetch_res.message)
+            return CheckExecutionSummary(
+                status=CheckStatus.SESSION_EXPIRED,
+                target_week=next_week,
+                meals_count=0,
+                event_type=EventType.SESSION_EXPIRED if notif_sent else None,
+                event_id=exp_event_id,
+                notification_sent=notif_sent,
+                delivery_report=report,
+                message=fetch_res.message,
+                duration_ms=duration_ms,
+                source=fetch_res.source,
+            )
+
+        # ۲) مدیریت حالت عادی «منوی هفته آینده هنوز منتشر نشده است» (بدون اعلان کاذب)
+        if fetch_res.status == CheckStatus.MENU_NOT_PUBLISHED:
+            self.repository.set_runtime_value("session_status", "ACTIVE")
+            self.repository.set_runtime_value("paused_for_relogin", "false")
+            self.repository.record_check_run(
+                target_week_start=next_week.start_iso,
+                target_week_end=next_week.end_iso,
+                status=CheckStatus.MENU_NOT_PUBLISHED,
+                source=fetch_res.source,
+                meals_count=0,
+                duration_ms=duration_ms,
+                message=fetch_res.message,
+                samad_code=fetch_res.samad_code,
+            )
+            logger.info("منوی هفته آینده هنوز منتشر نشده است (%s).", next_week.display_jalali_range())
+            return CheckExecutionSummary(
+                status=CheckStatus.MENU_NOT_PUBLISHED,
+                target_week=next_week,
+                meals_count=0,
+                event_type=None,
+                event_id=None,
+                notification_sent=False,
+                delivery_report=None,
+                message=fetch_res.message,
+                duration_ms=duration_ms,
+                source=fetch_res.source,
+            )
+
+        # ۳) مدیریت خطاهای فنی (قطعی اینترنت، خطای سرور، داده ناقص، تغییر ساختار سایت)
+        if fetch_res.status != CheckStatus.MENU_PUBLISHED:
+            self.repository.record_check_run(
+                target_week_start=next_week.start_iso,
+                target_week_end=next_week.end_iso,
+                status=fetch_res.status,
+                source=fetch_res.source,
+                meals_count=0,
+                duration_ms=duration_ms,
+                message=fetch_res.message,
+                http_status=fetch_res.http_status,
+                samad_code=fetch_res.samad_code,
+            )
+            logger.error(
+                "خطای فنی در بررسی سامانه سماد [%s]: %s",
+                fetch_res.status.value,
+                fetch_res.message,
+            )
+            return CheckExecutionSummary(
+                status=fetch_res.status,
+                target_week=next_week,
+                meals_count=0,
+                event_type=None,
+                event_id=None,
+                notification_sent=False,
+                delivery_report=None,
+                message=fetch_res.message,
+                duration_ms=duration_ms,
+                source=fetch_res.source,
+            )
+
+        # ۴) منوی هفته آینده منتشر شده است -> مقایسه با وضعیت قبلی دیتابیس
+        self.repository.set_runtime_value("session_status", "ACTIVE")
+        self.repository.set_runtime_value("paused_for_relogin", "false")
+
+        previous_menu = self.repository.get_menu_by_week(next_week.start_iso)
+        outcome = self.detector.evaluate(
+            week_range=next_week,
+            current_meals=fetch_res.meals,
+            previous_menu=previous_menu,
+            source=fetch_res.source,
+        )
+
+        if outcome.menu is None:
+            # آیتم‌ها خارج از بازه هفته آینده بودند
+            self.repository.record_check_run(
+                target_week_start=next_week.start_iso,
+                target_week_end=next_week.end_iso,
+                status=CheckStatus.MENU_NOT_PUBLISHED,
+                source=fetch_res.source,
+                meals_count=0,
+                duration_ms=duration_ms,
+                message=outcome.reason,
+            )
+            return CheckExecutionSummary(
+                status=CheckStatus.MENU_NOT_PUBLISHED,
+                target_week=next_week,
+                meals_count=0,
+                event_type=None,
+                event_id=None,
+                notification_sent=False,
+                delivery_report=None,
+                message=outcome.reason,
+                duration_ms=duration_ms,
+                source=fetch_res.source,
+            )
+
+        saved_menu = self.repository.save_menu(
+            outcome.menu,
+            snapshot_event_type=outcome.event_type,
+        )
+
+        event_type = outcome.event_type
+        event_id = outcome.event_id
+        initial_eid = build_initial_event_id(next_week.start_iso)
+
+        # اگر در اجرای قبلی اعلان اولیه به دلیل خطای موقت شبکه تلگرام ارسال نشده بود، اکنون تکمیل شود
+        if (
+            event_type is None
+            and active_channels
+            and not self.repository.is_event_fully_delivered(initial_eid, active_channels)
+        ):
+            event_type = EventType.MENU_AVAILABLE
+            event_id = initial_eid
+
+        notif_sent = False
+        delivery_report: Optional[DeliveryReport] = None
+
+        if event_type is not None and event_id is not None:
+            if self.repository.is_event_fully_delivered(event_id, active_channels):
+                logger.info(
+                    "رویداد %s قبلاً به تمام کانال‌ها ارسال شده است؛ از ارسال تکراری جلوگیری شد.",
+                    event_id,
+                )
+            else:
+                already_sent_channels: set[str] = self.repository.get_delivered_channels(event_id)
+                if event_type == EventType.MENU_UPDATED and outcome.diff is not None:
+                    notif_msg = format_menu_updated_notification(
+                        menu=saved_menu,
+                        diff=outcome.diff,
+                        week_range=next_week,
+                        university_label=self.config.samad_university_label,
+                        reserve_url=self.config.samad_reserve_url,
+                        event_id=event_id,
+                    )
+                else:
+                    notif_msg = format_menu_available_notification(
+                        menu=saved_menu,
+                        week_range=next_week,
+                        university_label=self.config.samad_university_label,
+                        reserve_url=self.config.samad_reserve_url,
+                        event_id=event_id,
+                    )
+
+                delivery_report = self.notification_manager.dispatch(
+                    notif_msg, already_delivered_channels=already_sent_channels
+                )
+                self.repository.record_event_delivery(
+                    event_id=event_id,
+                    event_type=event_type,
+                    week_start=next_week.start_iso,
+                    succeeded_channels=delivery_report.succeeded,
+                    failed_channels=delivery_report.failed.keys(),
+                    required_channels=active_channels,
+                )
+                notif_sent = bool(delivery_report.succeeded)
+
+        summary_msg = outcome.reason
+        self.repository.record_check_run(
+            target_week_start=next_week.start_iso,
+            target_week_end=next_week.end_iso,
+            status=CheckStatus.MENU_PUBLISHED,
+            source=fetch_res.source,
+            meals_count=len(saved_menu.meals),
+            duration_ms=duration_ms,
+            message=summary_msg,
+            event_id=event_id if notif_sent else None,
+        )
+
+        logger.info(
+            "بررسی کامل شد: وضعیت=%s | تعداد وعده‌ها=%d | رویداد=%s | اعلان جدید=%s",
+            CheckStatus.MENU_PUBLISHED.value,
+            len(saved_menu.meals),
+            event_type.value if event_type else "NONE",
+            notif_sent,
+        )
+
+        return CheckExecutionSummary(
+            status=CheckStatus.MENU_PUBLISHED,
+            target_week=next_week,
+            meals_count=len(saved_menu.meals),
+            event_type=event_type,
+            event_id=event_id,
+            notification_sent=notif_sent,
+            delivery_report=delivery_report,
+            message=summary_msg,
+            duration_ms=duration_ms,
+            source=fetch_res.source,
+            menu=saved_menu,
+        )

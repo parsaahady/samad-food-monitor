@@ -1,0 +1,487 @@
+<!doctype html>
+<html lang="fa" dir="rtl" data-theme="light">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>پنل مدیریت پایش غذای سماد — دانشگاه شهید بهشتی</title>
+  <link rel="stylesheet" href="styles.css" />
+</head>
+<body>
+  <!-- نوار اعلان بازخورد لحظه‌ای (Toast) -->
+  <div id="toast-container" class="toast-container" aria-live="polite"></div>
+
+  <div class="app-shell">
+    <!-- هدر اصلی -->
+    <header class="top-header">
+      <div class="brand-group">
+        <div class="brand-logo" aria-hidden="true">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+            <path d="M3 2v7c0 1.1.9 2 2 2h4a2 2 0 0 0 2-2V2"/>
+            <path d="M7 2v20"/>
+            <path d="M21 15V2v0a5 5 0 0 0-5 5v6c0 1.1.9 2 2 2h3Zm0 0v7"/>
+          </svg>
+        </div>
+        <div>
+          <div class="brand-title-row">
+            <h1>پنل هوشمند پایش غذای سماد</h1>
+            <span class="badge badge-readonly" title="این برنامه صرفاً پایش‌گر است و هیچ رزرو یا پرداختی انجام نمی‌دهد">فقط‌خواندنی و امن</span>
+          </div>
+          <p class="brand-subtitle" id="uni-subtitle">ویژه دانشجویان دانشگاه شهید بهشتی تهران • بدون ذخیره رمز عبور</p>
+        </div>
+      </div>
+
+      <div class="header-meta">
+        <div class="clock-pill">
+          <span class="pulse-dot"></span>
+          <div>
+            <div id="tehran-date" class="clock-date">در حال بارگذاری...</div>
+            <div class="clock-sub">ساعت تهران: <strong id="tehran-time">--:--:--</strong> <span id="peak-badge" class="mini-tag"></span></div>
+          </div>
+        </div>
+        <button id="theme-toggle" class="icon-btn" type="button" title="تغییر حالت روشن / تاریک">
+          <span id="theme-icon">🌙</span>
+        </button>
+      </div>
+    </header>
+
+    <!-- ۴ کارت وضعیت کلیدی در یک نگاه -->
+    <section class="kpi-grid" aria-label="خلاصه وضعیت سیستم">
+      <article class="kpi-card">
+        <div class="kpi-header">
+          <span class="kpi-title">وضعیت نشست کاربری سماد</span>
+          <span id="session-dot" class="status-dot status-warn"></span>
+        </div>
+        <div id="session-status-text" class="kpi-value">در حال بررسی...</div>
+        <div id="session-user-sub" class="kpi-sub">ورود امن از طریق مرورگر محلی</div>
+      </article>
+
+      <article class="kpi-card">
+        <div class="kpi-header">
+          <span class="kpi-title">سرویس پایش خودکار</span>
+          <span id="sched-dot" class="status-dot status-neutral"></span>
+        </div>
+        <div id="sched-status-text" class="kpi-value">بررسی وضعیت...</div>
+        <div id="sched-next-sub" class="kpi-sub">بررسی بعدی: —</div>
+      </article>
+
+      <article class="kpi-card">
+        <div class="kpi-header">
+          <span class="kpi-title">وضعیت منوی هفته آینده</span>
+          <span id="menu-dot" class="status-dot status-neutral"></span>
+        </div>
+        <div id="menu-status-text" class="kpi-value">در انتظار بررسی</div>
+        <div id="menu-week-sub" class="kpi-sub">—</div>
+      </article>
+
+      <article class="kpi-card">
+        <div class="kpi-header">
+          <span class="kpi-title">کانال‌های اعلان و آمار</span>
+          <span id="notif-dot" class="status-dot status-neutral"></span>
+        </div>
+        <div id="notif-status-text" class="kpi-value">—</div>
+        <div id="stats-sub" class="kpi-sub">۰ بررسی انجام‌شده</div>
+      </article>
+    </section>
+
+    <!-- نوار دکمه‌های عملیاتی یک‌کلیکی -->
+    <section class="action-bar">
+      <div class="action-buttons-primary">
+        <button id="btn-check-now" class="btn btn-primary" type="button">
+          <span class="btn-icon">🔎</span>
+          <span id="btn-check-label">بررسی فوری منوی هفته آینده</span>
+        </button>
+
+        <button id="btn-scheduler-toggle" class="btn btn-accent" type="button">
+          <span class="btn-icon" id="btn-sched-icon">▶️</span>
+          <span id="btn-sched-label">روشن کردن پایش خودکار</span>
+        </button>
+
+        <button id="btn-login" class="btn btn-outline" type="button">
+          <span class="btn-icon">🔐</span>
+          <span>ورود دستی به سماد (مرورگر)</span>
+        </button>
+      </div>
+
+      <div class="action-buttons-secondary">
+        <button id="btn-test-notify" class="btn btn-ghost" type="button">🔔 تست اعلان</button>
+        <button id="btn-doctor" class="btn btn-ghost" type="button">🩺 سلامت سیستم</button>
+        <a id="link-open-samad" href="https://samad.app/food/reserve" target="_blank" rel="noopener noreferrer" class="btn btn-samad-link">
+          🍽 باز کردن سایت سماد ↗
+        </a>
+      </div>
+    </section>
+
+    <!-- پنل بازشوی عیب‌یاب سلامت (Doctor) -->
+    <section id="doctor-drawer" class="doctor-drawer hidden">
+      <div class="drawer-header">
+        <h3>🩺 گزارش عیب‌یاب سلامت سیستم (Doctor)</h3>
+        <button id="btn-close-doctor" class="btn-text" type="button">بستن ✕</button>
+      </div>
+      <div id="doctor-results" class="doctor-grid"></div>
+    </section>
+
+    <!-- تب‌های ناوبری -->
+    <nav class="tabs-nav" role="tablist">
+      <button class="tab-btn active" data-tab="tab-menu" type="button" role="tab">🍽 برنامه غذایی هفتگی</button>
+      <button class="tab-btn" data-tab="tab-subscribers" id="tab-btn-subscribers" type="button" role="tab">👥 مشترکین ربات تلگرام</button>
+      <button class="tab-btn" data-tab="tab-settings" type="button" role="tab">⚙️ تنظیمات آسان (.env)</button>
+      <button class="tab-btn" data-tab="tab-logs" type="button" role="tab">📜 تاریخچه و لاگ زنده</button>
+      <button class="tab-btn" data-tab="tab-guide" type="button" role="tab">🚀 راهنمای اجرا و اتواستارت</button>
+    </nav>
+
+    <!-- ==================== تب ۱: برنامه غذایی هفتگی ==================== -->
+    <main id="tab-menu" class="tab-panel active">
+      <div id="demo-banner" class="alert-banner alert-demo hidden">
+        <div>
+          <strong>👀 حالت پیش‌نمایش آزمایشی:</strong>
+          این جدول یک نمونه نمایشی از ظاهر برنامه غذایی دانشگاه شهید بهشتی است و در دیتابیس ذخیره نشده است.
+        </div>
+        <button id="btn-exit-demo" class="btn btn-sm btn-outline" type="button">بازگشت به وضعیت واقعی</button>
+      </div>
+
+      <div id="error-banner" class="alert-banner alert-warn hidden"></div>
+
+      <div class="toolbar-row">
+        <div class="week-title-box">
+          <h2 id="board-week-title">برنامه غذایی هفته آینده</h2>
+          <p id="board-week-subtitle" class="muted-text">—</p>
+        </div>
+
+        <div class="filter-controls">
+          <input id="food-search" type="search" class="input-control input-sm" placeholder="جستجوی نام غذا یا سلف..." />
+          <select id="meal-type-filter" class="input-control input-sm">
+            <option value="ALL">همه وعده‌ها</option>
+            <option value="صبحانه">فقط صبحانه</option>
+            <option value="ناهار">فقط ناهار</option>
+            <option value="شام">فقط شام</option>
+          </select>
+          <select id="saved-weeks-select" class="input-control input-sm" title="انتخاب هفته">
+            <option value="">هفته آینده (پیش‌فرض)</option>
+          </select>
+        </div>
+      </div>
+
+      <!-- حالت خالی (زمانی که هنوز منوی هفته آینده منتشر نشده است) -->
+      <div id="empty-menu-state" class="empty-state-card hidden">
+        <div class="empty-icon">⏳</div>
+        <h3>منوی هفته آینده هنوز در سامانه سماد منتشر نشده است</h3>
+        <p id="empty-state-desc">
+          به محض اینکه اداره تغذیه دانشگاه شهید بهشتی منوی هفته آینده را ثبت کند، سیستم آن را تشخیص داده و در تلگرام و ویندوز ۱۱ به شما اطلاع می‌دهد.
+        </p>
+        <div class="empty-actions">
+          <button id="btn-preview-demo" class="btn btn-outline" type="button">👀 مشاهده پیش‌نمایش نمونه جدول هفتگی</button>
+        </div>
+      </div>
+
+      <!-- گرید ۷ روزه شنبه تا جمعه -->
+      <div id="days-grid" class="days-grid"></div>
+    </main>
+
+    <!-- ==================== تب ۲: مدیریت مشترکین و گیرندگان ربات تلگرام ==================== -->
+    <section id="tab-subscribers" class="tab-panel">
+      <div id="sub-token-warning" class="alert-banner alert-warn hidden">
+        <div>
+          <strong>⚠️ توکن ربات تلگرام هنوز ثبت نشده است:</strong>
+          ابتدا در تب <strong>«⚙️ تنظیمات آسان (.env)»</strong> توکن ربات خود (از <code>@BotFather</code>) و پورت پروکسی فیلترشکن را ذخیره کنید تا بتوانید دوستانتان را اضافه نمایید.
+        </div>
+      </div>
+
+      <div class="settings-grid">
+        <!-- کارت ۱: لینک دعوت و عضویت خودکار با Start -->
+        <div class="card">
+          <div class="card-header">
+            <h3>🔗 دعوت سریع دوستان (با دکمه Start ربات)</h3>
+          </div>
+          <p class="muted-text">
+            دوستانتان کافی است وارد ربات تلگرام شما شوند و دکمه <strong>Start</strong> را بزنند! حتی می‌توانند با ارسال دستور <code>/menu</code> در هر لحظه آخرین منوی ذخیره‌شده را از ربات بگیرند.
+          </p>
+
+          <div class="invite-link-box mt-sm">
+            <label>لینک دعوت آماده ارسال برای دوستان:</label>
+            <div class="invite-copy-row">
+              <input type="text" id="sub-invite-link" class="input-control ltr-input" readonly value="ابتدا دکمه «بروزرسانی از تلگرام» را بزنید..." />
+              <button type="button" id="btn-copy-invite" class="btn btn-outline btn-sm">📋 کپی لینک</button>
+            </div>
+          </div>
+
+          <div class="checkbox-box mt-sm">
+            <label class="switch-row">
+              <input type="checkbox" id="sub-auto-enabled" />
+              <span><strong>عضویت خودکار با زدن Start:</strong> هر کسی لینک را باز کند و Start بزند خودکار مشترک منو شود</span>
+            </label>
+          </div>
+
+          <div class="form-group mt-sm">
+            <label for="sub-invite-code">کد دعوت اختصاصی (اختیاری — برای جلوگیری از عضویت غریبه‌ها)</label>
+            <input type="text" id="sub-invite-code" class="input-control ltr-input" placeholder="خالی = آزاد برای همه | مثال: sbu1405" />
+            <small class="field-hint">اگر کد بگذارید، فقط کسانی که از طریق لینک دعوت بالا وارد ربات شوند خودکار عضو می‌شوند.</small>
+          </div>
+
+          <button type="button" id="btn-save-auto-sub" class="btn btn-primary btn-sm">💾 ذخیره تنظیمات عضویت خودکار</button>
+        </div>
+
+        <!-- کارت ۲: افزودن دستی دوست، گروه یا کانال -->
+        <div class="card">
+          <div class="card-header">
+            <h3>➕ افزودن دستی شخص، گروه خوابگاه یا کانال</h3>
+          </div>
+          <form id="add-subscriber-form">
+            <div class="form-group">
+              <label for="sub-add-name">نام دوست یا عنوان گروه</label>
+              <input type="text" id="sub-add-name" class="input-control" placeholder="مثال: علی رضایی / گروه ورودی‌های ۱۴۰۲" />
+            </div>
+
+            <div class="form-group">
+              <label for="sub-add-chat-id">شناسه عددی (Chat ID) یا آیدی کانال عمومی</label>
+              <input type="text" id="sub-add-chat-id" class="input-control ltr-input" required placeholder="مثال: 987654321 یا -100123456789 یا @my_channel" />
+              <small class="field-hint">نکته مهم تلگرام: اشخاص حقیقی باید حتماً یک بار در ربات شما دکمه <code>Start</code> را زده باشند (برای گروه/کانال، ربات را عضو یا ادمین کنید).</small>
+            </div>
+
+            <div class="form-group">
+              <label for="sub-add-role">نوع اعلان‌های دریافتی</label>
+              <select id="sub-add-role" class="input-control">
+                <option value="subscriber">مشترک منو (فقط انتشار و تغییرات برنامه غذایی — مناسب دوستان)</option>
+                <option value="admin">مدیر سیستم (منوی غذا + هشدار فنی انقضای سشن سماد)</option>
+              </select>
+            </div>
+
+            <label class="switch-row mt-sm">
+              <input type="checkbox" id="sub-add-welcome" checked />
+              <span>ارسال پیام خوش‌آمدگویی در تلگرام به محض افزودن</span>
+            </label>
+
+            <div style="margin-top: 12px;">
+              <button type="submit" id="btn-add-sub-submit" class="btn btn-accent">➕ افزودن به لیست گیرندگان</button>
+            </div>
+          </form>
+        </div>
+      </div>
+
+      <!-- کارت ۳: افراد جدیدی که در تلگرام به ربات پیام/Start داده‌اند -->
+      <div class="card mt-lg">
+        <div class="logs-header-row">
+          <div>
+            <h3>📥 افرادی که اخیراً در تلگرام به ربات پیام / Start داده‌اند</h3>
+            <p class="muted-text">به دوستتان بگویید در تلگرام به ربات شما <code>/start</code> بزند، سپس دکمه مقابل را بزنید تا اسمش اینجا ظاهر شود و با یک کلیک اضافه‌اش کنید!</p>
+          </div>
+          <button type="button" id="btn-sync-contacts" class="btn btn-primary btn-sm">🔄 بروزرسانی از تلگرام (getUpdates)</button>
+        </div>
+        <div id="recent-contacts-list" class="contacts-chips-grid mt-sm">
+          <div class="muted-text">هنوز پیامی از تلگرام دریافت نشده است.</div>
+        </div>
+      </div>
+
+      <!-- کارت ۴: جدول کامل گیرندگان فعلی -->
+      <div class="card mt-lg">
+        <div class="logs-header-row">
+          <h3>📋 لیست گیرندگان اعلان‌های ربات تلگرام</h3>
+          <span id="subscribers-count-label" class="badge badge-readonly">۰ گیرنده</span>
+        </div>
+
+        <div class="table-wrapper mt-sm">
+          <table class="history-table">
+            <thead>
+              <tr>
+                <th>نام گیرنده</th>
+                <th>شناسه تلگرام (Chat ID)</th>
+                <th>سطح دسترسی</th>
+                <th>وضعیت دریافت</th>
+                <th>عملیات</th>
+              </tr>
+            </thead>
+            <tbody id="subscribers-tbody">
+              <tr><td colspan="5" class="muted-center">هیچ گیرنده‌ای ثبت نشده است.</td></tr>
+            </tbody>
+          </table>
+        </div>
+      </div>
+    </section>
+
+    <!-- ==================== تب ۳: تنظیمات گرافیکی ==================== -->
+    <section id="tab-settings" class="tab-panel">
+      <form id="settings-form" class="settings-grid">
+        <!-- کارت تنظیمات تلگرام -->
+        <div class="card">
+          <div class="card-header">
+            <h3>✈️ تنظیمات ربات تلگرام</h3>
+            <label class="switch-row">
+              <input type="checkbox" id="cfg-tg-enabled" />
+              <span>فعال بودن اعلان تلگرام</span>
+            </label>
+          </div>
+
+          <div class="form-group">
+            <label for="cfg-tg-token">توکن ربات تلگرام (TELEGRAM_BOT_TOKEN)</label>
+            <input type="password" id="cfg-tg-token" class="input-control ltr-input" autocomplete="off" placeholder="در صورت عدم تغییر خالی بگذارید" />
+            <small id="cfg-tg-token-hint" class="field-hint">توکن فعلی برای امنیت شما نمایش داده نمی‌شود.</small>
+          </div>
+
+          <div class="form-group">
+            <label for="cfg-tg-chat">شناسه عددی چت مدیر اصلی (TELEGRAM_CHAT_ID)</label>
+            <input type="text" id="cfg-tg-chat" class="input-control ltr-input" placeholder="مثال: 123456789" />
+            <small class="field-hint">برای افزودن آسان دوستان، هم‌اتاقی‌ها یا گروه‌ها از تب <strong>«👥 مشترکین ربات تلگرام»</strong> استفاده کنید!</small>
+          </div>
+
+          <div class="form-group">
+            <label for="cfg-tg-proxy">پروکسی اتصال به تلگرام در ایران (TELEGRAM_PROXY_URL)</label>
+            <input type="text" id="cfg-tg-proxy" class="input-control ltr-input" placeholder="مثال: socks5://127.0.0.1:10808" />
+            <div class="preset-chips">
+              <button type="button" id="btn-detect-proxy" class="chip-btn" style="font-weight:700;border-color:var(--accent);color:var(--accent);">🔍 تشخیص خودکار پورت فیلترشکن من</button>
+              <button type="button" class="chip-btn" data-proxy="http://127.0.0.1:12334">Hiddify (12334)</button>
+              <button type="button" class="chip-btn" data-proxy="socks5://127.0.0.1:10808">v2rayN (10808)</button>
+              <button type="button" class="chip-btn" data-proxy="socks5://127.0.0.1:2080">Nekoray (2080)</button>
+              <button type="button" class="chip-btn" data-proxy="http://127.0.0.1:7890">Clash (7890)</button>
+              <button type="button" class="chip-btn" data-proxy="">بدون پروکسی</button>
+            </div>
+          </div>
+        </div>
+
+        <!-- کارت تنظیمات ویندوز ۱۱ و زمان‌بندی -->
+        <div class="card">
+          <div class="card-header">
+            <h3>🖥 اعلان دسکتاپ ویندوز ۱۱ و زمان‌بندی</h3>
+          </div>
+
+          <div class="checkbox-box">
+            <label class="switch-row">
+              <input type="checkbox" id="cfg-win-enabled" />
+              <span>نمایش اعلان دسکتاپ روی Windows 11 (Toast Notification)</span>
+            </label>
+            <label class="switch-row">
+              <input type="checkbox" id="cfg-win-sound" />
+              <span>پخش صدای اعلان در ویندوز ۱۱</span>
+            </label>
+          </div>
+
+          <div class="two-col-inputs">
+            <div class="form-group">
+              <label for="cfg-normal-min">فاصله بررسی روزهای عادی (دقیقه)</label>
+              <input type="number" id="cfg-normal-min" min="5" max="720" class="input-control" />
+              <small class="field-hint">شنبه تا چهارشنبه (پیشنهادی: ۶۰)</small>
+            </div>
+            <div class="form-group">
+              <label for="cfg-peak-min">فاصله بررسی پنجشنبه و جمعه (دقیقه)</label>
+              <input type="number" id="cfg-peak-min" min="2" max="120" class="input-control" />
+              <small class="field-hint">روزهای اوج انتشار منو (پیشنهادی: ۱۲)</small>
+            </div>
+          </div>
+
+          <div class="form-group">
+            <label for="cfg-self-filter">فیلتر اختیاری نام سلف (با کاما جدا کنید)</label>
+            <input type="text" id="cfg-self-filter" class="input-control" placeholder="خالی = بررسی همه سلف‌های فعال شما (مثال: مرکزی,ولنجک)" />
+          </div>
+
+          <div class="two-col-inputs">
+            <div class="form-group">
+              <label for="cfg-strategy">روش واکشی اطلاعات از سماد</label>
+              <select id="cfg-strategy" class="input-control">
+                <option value="auto">هوشمند (API رسمی + پشتیبان مرورگر)</option>
+                <option value="api">فقط API رسمی سماد (سریع‌ترین)</option>
+                <option value="browser">مرورگر مخفی Playwright Headless</option>
+              </select>
+            </div>
+            <div class="form-group">
+              <label for="cfg-log-level">سطح جزئیات لاگ</label>
+              <select id="cfg-log-level" class="input-control">
+                <option value="INFO">استاندارد (INFO)</option>
+                <option value="DEBUG">جزئیات کامل عیب‌یابی (DEBUG)</option>
+                <option value="WARNING">فقط هشدارها (WARNING)</option>
+              </select>
+            </div>
+          </div>
+
+          <label class="switch-row mt-sm">
+            <input type="checkbox" id="cfg-ignore-proxy" />
+            <span>نادیده گرفتن VPN سیستم هنگام اتصال مستقیم به سرور دانشگاه شهید بهشتی (اکیداً توصیه می‌شود)</span>
+          </label>
+        </div>
+
+        <div class="settings-footer">
+          <div class="security-note">
+            🔒 <strong>یادآوری امنیتی:</strong> این سامانه هیچ فیلدی برای رمز عبور سماد ندارد. ورود به حساب دانشگاهی صرفاً یک بار با دکمه «ورود دستی به سماد» انجام می‌شود.
+          </div>
+          <button type="submit" id="btn-save-settings" class="btn btn-primary btn-lg">💾 ذخیره و اعمال آنی تنظیمات</button>
+        </div>
+      </form>
+    </section>
+
+    <!-- ==================== تب ۳: تاریخچه و لاگ زنده ==================== -->
+    <section id="tab-logs" class="tab-panel">
+      <div class="logs-header-row">
+        <h3>📋 آخرین بررسی‌های انجام‌شده</h3>
+        <button id="btn-refresh-logs" class="btn btn-outline btn-sm" type="button">🔄 بروزرسانی گزارش‌ها</button>
+      </div>
+
+      <div class="table-wrapper">
+        <table class="history-table">
+          <thead>
+            <tr>
+              <th>زمان بررسی (تهران)</th>
+              <th>هفته هدف</th>
+              <th>وضعیت</th>
+              <th>تعداد وعده</th>
+              <th>زمان پاسخ</th>
+              <th>توضیحات</th>
+            </tr>
+          </thead>
+          <tbody id="history-tbody">
+            <tr><td colspan="6" class="muted-center">هنوز بررسی ثبت نشده است.</td></tr>
+          </tbody>
+        </table>
+      </div>
+
+      <div class="logs-header-row mt-lg">
+        <h3>🖥 خروجی زنده فایل لاگ سیستم (سانسورشده و امن)</h3>
+      </div>
+      <pre id="log-viewer" class="log-terminal">فایل لاگ هنوز ایجاد نشده است.</pre>
+    </section>
+
+    <!-- ==================== تب ۴: راهنمای گام‌به‌گام ==================== -->
+    <section id="tab-guide" class="tab-panel">
+      <div class="guide-grid">
+        <div class="card">
+          <h3>۱️⃣ راه‌اندازی اولیه روی ویندوز ۱۱ (فقط یک بار)</h3>
+          <ol class="step-list">
+            <li>پوشه پروژه <code>samad-food-monitor</code> را روی کامپیوتر خود باز کنید.</li>
+            <li>روی فایل <code>1_Install_Windows.bat</code> دوبار کلیک کنید (یا دستورات زیر را در PowerShell بزنید):</li>
+          </ol>
+          <div class="code-box">
+            <pre>python -m venv .venv
+.\.venv\Scripts\Activate.ps1
+pip install -r requirements.txt
+pip install -e .
+playwright install chromium</pre>
+          </div>
+          <p class="muted-text mt-sm">سپس برای باز کردن همین پنل گرافیکی روی کامپیوتر خود، کافی است روی فایل <code>2_Start_Dashboard_Windows.bat</code> دوبار کلیک کنید!</p>
+        </div>
+
+        <div class="card">
+          <h3>۲️⃣ اتصال اکانت سماد و ربات تلگرام</h3>
+          <ol class="step-list">
+            <li>در تب <strong>«تنظیمات آسان»</strong> همین پنل، توکن ربات تلگرام (از <code>@BotFather</code>) و Chat ID خود (از <code>@userinfobot</code>) و پورت پروکسی فیلترشکن را وارد و ذخیره کنید.</li>
+            <li>روی دکمه <strong>«🔔 تست اعلان»</strong> بالای صفحه کلیک کنید تا پیام تست روی گوشی و دسکتاپ ویندوز ۱۱ شما بیاید.</li>
+            <li>روی دکمه <strong>«🔐 ورود دستی به سماد»</strong> کلیک کنید؛ در پنجره کرومیوم بازشده وارد حساب دانشگاه شهید بهشتی شوید تا نشست شما به‌صورت امن ذخیره شود.</li>
+            <li>روی دکمه <strong>«🔎 بررسی فوری منوی هفته آینده»</strong> کلیک کنید!</li>
+          </ol>
+        </div>
+
+        <div class="card full-span">
+          <h3>۳️⃣ اجرای کاملاً خودکار و مخفی بعد از روشن شدن ویندوز ۱۱</h3>
+          <p class="muted-text">اگر می‌خواهید حتی بدون باز بودن این صفحه هم ویندوز ۱۱ به محض روشن شدن، در پس‌زمینه (بدون هیچ پنجره سیاه مزاحمی) منوی سماد را چک کند، یک بار این دستور را در PowerShell داخل پوشه پروژه اجرا کنید:</p>
+          <div class="code-box">
+            <pre>powershell -ExecutionPolicy Bypass -File .\scripts\install_windows_task.ps1</pre>
+          </div>
+          <p class="muted-text mt-sm">هر زمان خواستید اجرای خودکار ویندوز را متوقف کنید، کافی است <code>uninstall_windows_task.ps1</code> را اجرا نمایید.</p>
+        </div>
+      </div>
+    </section>
+
+    <footer class="app-footer">
+      <span>سامانه پایش منوی غذای سماد — دانشگاه شهید بهشتی تهران (نسخه ۱.۰)</span>
+      <span>منطقه زمانی مرجع: Asia/Tehran • بدون رزرو خودکار</span>
+    </footer>
+  </div>
+
+  <script src="app.js"></script>
+</body>
+</html>

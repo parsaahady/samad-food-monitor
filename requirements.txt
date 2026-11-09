@@ -1,0 +1,14 @@
+# وابستگی‌های اصلی اجرای پروژه
+playwright>=1.48.0
+httpx>=0.27.0
+socksio>=1.0.0
+jdatetime>=5.0.0
+python-dotenv>=1.0.1
+tzdata>=2024.1
+
+# اعلان دسکتاپ بومی ویندوز ۱۰ و ۱۱ (فقط روی ویندوز نصب می‌شود)
+winotify>=1.1.0; sys_platform == 'win32'
+
+# ابزارهای تست خودکار
+pytest>=8.0.0
+pytest-asyncio>=0.23.0

@@ -1,0 +1,17 @@
+[Unit]
+Description=Samad Food Monitor - Shahid Beheshti University Weekly Menu Watcher
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+WorkingDirectory=%h/samad-food-monitor
+ExecStart=%h/samad-food-monitor/.venv/bin/python -m samad_monitor run
+Restart=always
+RestartSec=15
+Environment=PYTHONUNBUFFERED=1
+NoNewPrivileges=true
+PrivateTmp=true
+
+[Install]
+WantedBy=default.target

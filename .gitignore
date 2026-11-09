@@ -1,0 +1,41 @@
+# تنظیمات محرمانه و متغیرهای محیطی
+.env
+.env.*
+!.env.example
+
+# داده‌های محلی، پایگاه داده SQLite و نشست مرورگر (حساس و شخصی)
+data/*
+!data/.gitkeep
+*.db
+*.db-journal
+*.db-wal
+*.db-shm
+*storage_state*.json
+browser_profile/
+session/
+
+# فایل‌های گزارش (Log)
+logs/*
+!logs/.gitkeep
+*.log
+*.log.*
+
+# کش‌ها و محیط‌های مجازی پایتون
+__pycache__/
+*.py[cod]
+*$py.class
+.venv/
+venv/
+env/
+build/
+dist/
+*.egg-info/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+
+# فایل‌های سیستم‌عامل و ویرایشگرها
+.DS_Store
+Thumbs.db
+.vscode/
+.idea/
