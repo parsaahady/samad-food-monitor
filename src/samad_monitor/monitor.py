@@ -78,10 +78,32 @@ class SamadFoodMonitor:
         )
         self.detector = detector or MenuDetector(tz_name=config.timezone_name)
         self._on_demand_lock = threading.Lock()
+        # کش فوق‌سریع در حافظه RAM برای پاسخ آنی (<1ms) به ربات تلگرام بدون مراجعه به سماد
+        # ساختار: {week_start_iso: (cached_tehran_date_iso, Menu)}
+        self._ram_week_cache: dict[str, tuple[str, Menu]] = {}
 
         tg_ch = self.notification_manager.get_telegram_channel()
         if tg_ch is not None and hasattr(tg_ch, "set_week_menu_provider"):
             tg_ch.set_week_menu_provider(self.fetch_week_on_demand)
+
+        self._preload_ram_cache_from_db()
+
+    def _preload_ram_cache_from_db(self) -> None:
+        """بارگذاری اولیه منوهای ذخیره‌شده از SQLite به RAM هنگام بالا آمدن برنامه."""
+        try:
+            now_dt = now_tehran(tz_name=self.config.timezone_name)
+            today_iso = now_dt.date().isoformat()
+            for getter in (get_previous_week_range, get_current_week_range, get_next_week_range):
+                wk = getter(now_dt, tz_name=self.config.timezone_name)
+                m = self.repository.get_menu_by_week(wk.start_iso)
+                if m and m.meals:
+                    saved_day = (
+                        self.repository.get_runtime_value(f"daily_menu_date:{wk.start_iso}")
+                        or today_iso
+                    )
+                    self._ram_week_cache[wk.start_iso] = (saved_day, m)
+        except Exception:
+            pass
 
     def check_once(self, reference_dt: Optional[datetime] = None) -> CheckExecutionSummary:
         """اجرای یک نوبت کامل بررسی وضعیت منوی هفته آینده."""
@@ -266,6 +288,9 @@ class SamadFoodMonitor:
             outcome.menu,
             snapshot_event_type=outcome.event_type,
         )
+        today_iso = now_tehran(reference_dt, tz_name=self.config.timezone_name).date().isoformat()
+        self._ram_week_cache[next_week.start_iso] = (today_iso, saved_menu)
+        self.repository.set_runtime_value(f"daily_menu_date:{next_week.start_iso}", today_iso)
 
         event_type = outcome.event_type
         event_id = outcome.event_id
@@ -363,10 +388,13 @@ class SamadFoodMonitor:
         reference_dt: Optional[datetime] = None,
     ) -> Tuple[WeekRange, Optional[Menu], CheckStatus, str]:
         """
-        واکشی هوشمند و کش‌شده منوی «هفته قبل» (`prev`)، «هفته جاری» (`curr`) یا «هفته آینده» (`next`)
-        برای پاسخ‌گویی سریع به دکمه‌های ربات تلگرام و پنل وب (همه سلف‌ها: خوابگاه و مرکزی).
+        پاسخ‌گویی آنی از کش RAM / SQLite به دکمه‌های ربات تلگرام:
+        - `prev` (هفته قبل): یک بار واکشی می‌شود و برای کل هفته از حافظه RAM پاسخ داده می‌شود.
+        - `curr` (هفته جاری): حداکثر یک بار در هر روز تقویمی تهران واکشی می‌شود و تمام روز از RAM پاسخ داده می‌شود.
+        - `next` (هفته آینده): مستقیم از حافظه RAM / دیتابیس پاسخ داده می‌شود.
         """
         ref = reference_dt or now_tehran(tz_name=self.config.timezone_name)
+        today_iso = ref.date().isoformat()
         clean_key = (week_key or "prev").strip().lower()
         if clean_key == "prev":
             target_week = get_previous_week_range(ref, tz_name=self.config.timezone_name)
@@ -376,12 +404,25 @@ class SamadFoodMonitor:
             clean_key = "next"
             target_week = get_next_week_range(ref, tz_name=self.config.timezone_name)
 
+        # مسیر سریع بدون قفل (O(1) RAM Cache) برای پاسخ زیر ۱ میلی‌ثانیه به همه کاربران!
+        if not force_refresh:
+            ram_entry = self._ram_week_cache.get(target_week.start_iso)
+            if ram_entry is not None:
+                cached_day_iso, ram_menu = ram_entry
+                if ram_menu.meals:
+                    if clean_key in {"prev", "next"} or cached_day_iso == today_iso:
+                        return (target_week, ram_menu, CheckStatus.MENU_PUBLISHED, "از حافظه سریع RAM")
+
         with self._on_demand_lock:
             cached = self.repository.get_menu_by_week(target_week.start_iso)
+            daily_date_key = f"daily_menu_date:{target_week.start_iso}"
+            legacy_flag_key = f"unfiltered_week_cached:{target_week.start_iso}"
+            saved_day_iso = self.repository.get_runtime_value(daily_date_key)
+            has_legacy_flag = bool(self.repository.get_runtime_value(legacy_flag_key))
 
             if clean_key == "next":
-                # برای هفته آینده از کش دیتابیس بخوان تا چرخه اعلان خودکار دست‌کاری نشود
                 if cached and cached.meals and not force_refresh:
+                    self._ram_week_cache[target_week.start_iso] = (today_iso, cached)
                     return (
                         target_week,
                         cached,
@@ -398,28 +439,18 @@ class SamadFoodMonitor:
                     "منوی هفته آینده هنوز در آخرین بررسی منتشر نشده است.",
                 )
 
-            # برای هفته قبل (prev) و هفته جاری (curr): کش هوشمند دیتابیس + واکشی زنده از سماد بدون فیلتر سلف
-            cache_flag_key = f"unfiltered_week_cached:{target_week.start_iso}"
-            last_cached_ts_raw = self.repository.get_runtime_value(cache_flag_key)
-
-            if cached and cached.meals and last_cached_ts_raw and not force_refresh:
-                if clean_key == "prev":
-                    # منوی هفته گذشته تغییر نمی‌کند؛ یک بار واکشی کافی است
-                    return (target_week, cached, CheckStatus.MENU_PUBLISHED, "از حافظه کش دیتابیس")
-                try:
-                    age_sec = time.time() - float(last_cached_ts_raw)
-                    if age_sec < 1800:
-                        return (
-                            target_week,
-                            cached,
-                            CheckStatus.MENU_PUBLISHED,
-                            "از حافظه کش دیتابیس",
-                        )
-                except ValueError:
-                    pass
+            if cached and cached.meals and not force_refresh:
+                # هفته قبل: ثابت است و اصلاً نیاز به استعلام مجدد ندارد
+                if clean_key == "prev" and (saved_day_iso or has_legacy_flag):
+                    self._ram_week_cache[target_week.start_iso] = (saved_day_iso or today_iso, cached)
+                    return (target_week, cached, CheckStatus.MENU_PUBLISHED, "از کش دیتابیس")
+                # هفته جاری: فقط یک بار در هر روز تقویمی تهران کافی است!
+                if clean_key == "curr" and saved_day_iso == today_iso:
+                    self._ram_week_cache[target_week.start_iso] = (today_iso, cached)
+                    return (target_week, cached, CheckStatus.MENU_PUBLISHED, "از کش روزانه دیتابیس")
 
             logger.info(
-                "واکشی درخواستی منوی هفته %s (%s تا %s) برای همه سلف‌ها (خوابگاه و مرکزی)...",
+                "واکشی روزانه منوی هفته %s (%s تا %s) از سماد و ذخیره در کش...",
                 clean_key,
                 target_week.start_iso,
                 target_week.end_iso,
@@ -437,11 +468,27 @@ class SamadFoodMonitor:
                 )
                 if outcome.menu is not None:
                     saved = self.repository.save_menu(outcome.menu)
-                    self.repository.set_runtime_value(cache_flag_key, str(int(time.time())))
+                    self.repository.set_runtime_value(daily_date_key, today_iso)
+                    self.repository.set_runtime_value(legacy_flag_key, str(int(time.time())))
+                    self._ram_week_cache[target_week.start_iso] = (today_iso, saved)
                     return (target_week, saved, CheckStatus.MENU_PUBLISHED, fetch_res.message)
 
             if cached and cached.meals:
+                self._ram_week_cache[target_week.start_iso] = (today_iso, cached)
                 return (target_week, cached, CheckStatus.MENU_PUBLISHED, "از آرشیو ذخیره‌شده دیتابیس")
 
             return (target_week, None, fetch_res.status, fetch_res.message)
+
+    def warm_daily_menus_if_needed(self, reference_dt: Optional[datetime] = None) -> None:
+        """
+        پیش‌بارگذاری خودکار روزانه در پس‌زمینه (حداکثر یک بار در روز برای هفته جاری و یک بار برای هفته قبل)
+        تا وقتی هر کاربری در تلگرام دکمه منو را می‌زند، بدون حتی ۱ ثانیه صبر کردن برای سماد، پاسخ آنی بگیرد!
+        """
+        try:
+            if not self.client.session_manager.load().has_credentials:
+                return
+            for wk_key in ("curr", "prev"):
+                self.fetch_week_on_demand(wk_key, force_refresh=False, reference_dt=reference_dt)
+        except Exception as exc:
+            logger.debug("پیش‌بارگذاری پس‌زمینه کش روزانه رد شد: %s", exc)
 

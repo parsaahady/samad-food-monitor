@@ -597,6 +597,27 @@ class SamadClient:
                     and "مکمل" not in s.name
                     and "آزاد" not in s.name
                 ]
+        # بهینه‌سازی سرعت: فقط سلف اصلی «خوابگاه کوی ولنجک» + سلف اصلی «مرکزی» نگه داشته شوند (بدون کافه‌تریاهای فرعی)
+        if not has_custom_filter and food_selfs:
+            dorm_items = [
+                s
+                for s in food_selfs
+                if any(
+                    kw in s.name.replace("ي", "ی").replace("ك", "ک")
+                    for kw in ("خوابگاه", "کوی", "سرا")
+                )
+                and "مرکزی" not in s.name.replace("ي", "ی").replace("ك", "ک")
+            ]
+            non_dorm_items = [s for s in food_selfs if s not in dorm_items]
+
+            if len(dorm_items) > 1:
+                subsidized_dorms = [
+                    s
+                    for s in dorm_items
+                    if not s.free_restaurant
+                    and "مکمل" not in s.name
+                    and "آزاد" not in s.name
+                ]
                 chosen_dorms = subsidized_dorms or dorm_items
                 velenjak_dorms = [
                     s
@@ -605,7 +626,24 @@ class SamadClient:
                 ]
                 if velenjak_dorms:
                     chosen_dorms = velenjak_dorms
-                food_selfs = non_dorm_items + chosen_dorms[:1]
+                dorm_items = chosen_dorms[:1]
+
+            central_candidates = [
+                s
+                for s in non_dorm_items
+                if "مرکزی" in s.name.replace("ي", "ی").replace("ك", "ک")
+            ]
+            if central_candidates:
+                subsidized_central = [
+                    s
+                    for s in central_candidates
+                    if not s.free_restaurant
+                    and "مکمل" not in s.name
+                    and "آزاد" not in s.name
+                ]
+                non_dorm_items = (subsidized_central or central_candidates)[:1]
+
+            food_selfs = non_dorm_items + dorm_items
 
         if not ignore_user_filter:
             if self.config.samad_self_ids:

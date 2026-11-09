@@ -71,7 +71,7 @@ def build_self_selector_inline_keyboard(week_key: str) -> Dict[str, Any]:
 
 
 def build_post_menu_switch_keyboard(week_key: str, current_scope: str) -> Dict[str, Any]:
-    """دکمه‌های شیشه‌ای زیر پیام منو برای جابه‌جایی سریع بین خوابگاه کوی ولنجک و سلف مرکزی."""
+    """دکمه‌های شیشه‌ای زیر پیام منو برای جابه‌جایی آنی از کش بین خوابگاه کوی ولنجک و سلف مرکزی."""
     wk = week_key if week_key in {"prev", "curr", "next"} else "prev"
     w_label = WEEK_LABELS_FA.get(wk, "هفته")
     row1: List[Dict[str, str]] = []
@@ -81,15 +81,8 @@ def build_post_menu_switch_keyboard(week_key: str, current_scope: str) -> Dict[s
         row1.append({"text": f"🏛 مشاهده سلف مرکزی ({w_label})", "callback_data": f"menu:{wk}:central"})
 
     rows: List[List[Dict[str, str]]] = [row1]
-    if wk in {"prev", "curr"}:
-        eff_scope = "central" if current_scope == "central" else "dorm"
-        rows.append(
-            [{"text": "🔄 بروزرسانی از سرور سماد", "callback_data": f"refresh:{wk}:{eff_scope}"}]
-        )
-    else:
-        rows.append(
-            [{"text": "📅 منوی هفته قبل", "callback_data": "pick:prev"}]
-        )
+    if wk == "next":
+        rows.append([{"text": "📅 منوی هفته قبل", "callback_data": "pick:prev"}])
     return {"inline_keyboard": rows}
 
 
@@ -196,6 +189,7 @@ class TelegramNotificationChannel(NotificationChannel):
         self._timezone_name = timezone_name
         self._week_menu_provider = week_menu_provider
         self._commands_registered = False
+        self._sync_lock = threading.Lock()
 
         if self._repository is not None and self._chat_ids:
             try:
@@ -491,11 +485,13 @@ class TelegramNotificationChannel(NotificationChannel):
         auto_subscribe: bool = False,
         invite_code: str = "",
         handle_commands: bool = True,
+        long_poll_seconds: int = 0,
+        persistent_client: Optional[httpx.Client] = None,
     ) -> Dict[str, Any]:
         """
-        خواندن پیام‌ها و کلیک‌های روی دکمه‌های شیشه‌ای ربات (`getUpdates`):
+        خواندن آنی پیام‌ها و کلیک‌های روی دکمه‌های شیشه‌ای ربات (`getUpdates`) با پشتیبانی از Long-Polling و Keep-Alive:
         - دکمه‌های کیبورد پایین صفحه: «🍽 منوی هفته آینده»، «📅 منوی هفته قبل»، «📆 منوی هفته جاری»
-        - دکمه‌های شیشه‌ای انتخاب سلف: «🏠 منوی سلف خوابگاه» و «🏛 منوی سلف مرکزی»
+        - دکمه‌های شیشه‌ای انتخاب سلف: «🏠 منوی خوابگاه کوی ولنجک» و «🏛 منوی سلف مرکزی»
         """
         if not self._bot_token:
             return {
@@ -507,9 +503,10 @@ class TelegramNotificationChannel(NotificationChannel):
         if self._repository is None:
             return {"ok": False, "new_updates": 0, "auto_added": 0, "message": "دیتابیس متصل نیست."}
 
+        effective_wait = 0 if self._http_transport is not None else max(0, min(int(long_poll_seconds), 25))
         last_offset_str = self._repository.get_runtime_value("telegram_last_update_id")
         params: Dict[str, Any] = {
-            "timeout": 0,
+            "timeout": effective_wait,
             "limit": 100,
             "allowed_updates": json.dumps(
                 ["message", "channel_post", "my_chat_member", "callback_query"]
@@ -519,32 +516,47 @@ class TelegramNotificationChannel(NotificationChannel):
             params["offset"] = int(last_offset_str) + 1
 
         endpoint = f"{self._api_base_url}/bot{self._bot_token}/getUpdates"
+        owns_client = persistent_client is None
+        client = persistent_client or self._build_client(custom_timeout=max(18.0, float(effective_wait + 10)))
         try:
-            with self._build_client(custom_timeout=18.0) as client:
-                if not self._commands_registered and self._http_transport is None:
-                    self.ensure_bot_commands_registered(client=client)
+            if not self._commands_registered and self._http_transport is None:
+                self.ensure_bot_commands_registered(client=client)
 
-                resp = client.get(endpoint, params=params)
-                data = resp.json()
-                if resp.status_code != 200 or not data.get("ok"):
-                    desc = data.get("description") or resp.text[:120]
-                    return {
-                        "ok": False,
-                        "new_updates": 0,
-                        "auto_added": 0,
-                        "message": f"خطا در دریافت پیام‌های ربات ({resp.status_code}): {desc}",
-                    }
+            resp = client.get(endpoint, params=params)
+            data = resp.json()
+            if resp.status_code != 200 or not data.get("ok"):
+                desc = data.get("description") or resp.text[:120]
+                return {
+                    "ok": False,
+                    "new_updates": 0,
+                    "auto_added": 0,
+                    "message": f"خطا در دریافت پیام‌های ربات ({resp.status_code}): {desc}",
+                }
 
-                updates: List[Dict[str, Any]] = data.get("result") or []
+            updates: List[Dict[str, Any]] = data.get("result") or []
+            if not updates:
+                return {
+                    "ok": True,
+                    "new_updates": 0,
+                    "discovered_chats": 0,
+                    "auto_added": 0,
+                    "message": "پیام جدیدی از آخرین بررسی ثبت نشده است.",
+                }
+
+            with self._sync_lock:
+                # ثبت فوری offset قبل از پردازش تا کلیک‌های هم‌زمان هرگز دوبار اجرا نشوند
                 max_update_id: Optional[int] = None
-                auto_added_count = 0
-                discovered_chats = 0
-
                 for upd in updates:
                     upd_id = upd.get("update_id")
                     if isinstance(upd_id, int):
                         max_update_id = upd_id if max_update_id is None else max(max_update_id, upd_id)
+                if max_update_id is not None:
+                    self._repository.set_runtime_value("telegram_last_update_id", str(max_update_id))
 
+                auto_added_count = 0
+                discovered_chats = 0
+
+                for upd in updates:
                     # ۱) پردازش کلیک روی دکمه‌های شیشه‌ای (Inline Keyboard Callback)
                     cb_query = upd.get("callback_query")
                     if isinstance(cb_query, dict):
@@ -612,29 +624,25 @@ class TelegramNotificationChannel(NotificationChannel):
                     )
                     auto_added_count += added_from_msg
 
-                if max_update_id is not None:
-                    self._repository.set_runtime_value(
-                        "telegram_last_update_id", str(max_update_id)
-                    )
-
                 return {
                     "ok": True,
                     "new_updates": len(updates),
                     "discovered_chats": discovered_chats,
                     "auto_added": auto_added_count,
-                    "message": (
-                        f"{len(updates)} پیام/درخواست جدید بررسی شد."
-                        if updates
-                        else "پیام جدیدی از آخرین بررسی ثبت نشده است."
-                    ),
+                    "message": f"{len(updates)} پیام/درخواست جدید بررسی شد.",
                 }
         except Exception as exc:
+            if persistent_client is not None:
+                raise
             return {
                 "ok": False,
                 "new_updates": 0,
                 "auto_added": 0,
                 "message": f"خطا در ارتباط با تلگرام (پورت فیلترشکن را بررسی کنید): {exc}",
             }
+        finally:
+            if owns_client:
+                client.close()
 
     def _check_or_auto_authorize(
         self,
@@ -1016,21 +1024,29 @@ class TelegramNotificationChannel(NotificationChannel):
 
 
 class TelegramBotPoller:
-    """گوش‌دهنده سریع پس‌زمینه برای پاسخ‌گویی به دکمه‌های منوی هفته قبل/آینده و انتخاب سلف خوابگاه/مرکزی."""
+    """
+    گوش‌دهنده بلادرنگ (Long-Polling + Persistent Keep-Alive TLS Socket) برای پاسخ فوری زیر ۰.۲ ثانیه:
+    - بدون بستن اتصال پروکسی/TLS در هر چرخه
+    - دریافت آنی کلیک دکمه‌ها به محض لمس توسط کاربر (`getUpdates?timeout=15`)
+    """
 
     def __init__(
         self,
         channel: TelegramNotificationChannel,
         auto_subscribe_getter: Any,
         invite_code_getter: Any,
-        poll_interval_seconds: float = 2.5,
+        poll_interval_seconds: float = 0.05,
+        long_poll_seconds: int = 15,
     ) -> None:
         self._channel = channel
         self._auto_subscribe_getter = auto_subscribe_getter
         self._invite_code_getter = invite_code_getter
-        self._poll_interval = max(1.5, poll_interval_seconds)
+        self._poll_interval = max(0.05, poll_interval_seconds)
+        self._long_poll_seconds = max(1, min(int(long_poll_seconds), 25))
         self._stop_event = threading.Event()
         self._thread: Optional[threading.Thread] = None
+        self._active_client: Optional[httpx.Client] = None
+        self._client_lock = threading.Lock()
 
     def start(self) -> None:
         if self._thread is not None and self._thread.is_alive():
@@ -1047,21 +1063,51 @@ class TelegramBotPoller:
 
     def stop(self) -> None:
         self._stop_event.set()
+        with self._client_lock:
+            if self._active_client is not None:
+                try:
+                    self._active_client.close()
+                except Exception:
+                    pass
+                self._active_client = None
         t = self._thread
         if t is not None and t.is_alive():
-            t.join(timeout=3.0)
+            t.join(timeout=2.0)
         self._thread = None
 
     def _run_loop(self) -> None:
         while not self._stop_event.is_set():
-            try:
-                if self._channel.has_bot_token:
-                    self._channel.sync_bot_updates(
-                        auto_subscribe=bool(self._auto_subscribe_getter()),
-                        invite_code=str(self._invite_code_getter() or ""),
-                        handle_commands=True,
+            if not self._channel.has_bot_token:
+                if self._stop_event.wait(timeout=2.0):
+                    break
+                continue
+
+            with self._client_lock:
+                if self._active_client is None:
+                    self._active_client = self._channel._build_client(
+                        custom_timeout=float(self._long_poll_seconds + 12)
                     )
+                client = self._active_client
+
+            try:
+                res = self._channel.sync_bot_updates(
+                    auto_subscribe=bool(self._auto_subscribe_getter()),
+                    invite_code=str(self._invite_code_getter() or ""),
+                    handle_commands=True,
+                    long_poll_seconds=self._long_poll_seconds,
+                    persistent_client=client,
+                )
+                wait_sec = self._poll_interval if res.get("ok") else 2.0
             except Exception as exc:
-                logger.debug("خطای موقت در حلقه بررسی دستورات ربات تلگرام: %s", exc)
-            if self._stop_event.wait(timeout=self._poll_interval):
+                logger.debug("تنظیم مجدد اتصال پایدار ربات تلگرام پس از خطای شبکه: %s", exc)
+                with self._client_lock:
+                    if self._active_client is client:
+                        try:
+                            client.close()
+                        except Exception:
+                            pass
+                        self._active_client = None
+                wait_sec = 2.0
+
+            if self._stop_event.wait(timeout=wait_sec):
                 break

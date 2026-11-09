@@ -435,3 +435,94 @@ def test_previous_week_bot_menu_with_dorm_and_central_options(tmp_path) -> None:
     assert "کتلت مخصوص خوابگاه" not in bot_sent[0]["text"]
 
 
+def test_daily_cache_for_current_and_previous_week_zero_refetch(tmp_path) -> None:
+    """
+    بررسی کش یک‌باردرروز (RAM + SQLite):
+    - هفته جاری (`curr`) در کل یک روز تقویمی تهران فقط یک بار از سماد گرفته می‌شود حتی اگر ده نفر درخواست دهند.
+    - با عوض شدن روز تقویمی تهران (فردا)، هفته جاری دقیقاً یک بار تجدید می‌شود اما هفته قبل (`prev`) همچنان ثابت می‌ماند.
+    """
+    from datetime import datetime
+    from samad_monitor.browser.client import SamadClient
+    from samad_monitor.browser.session import SessionManager
+    from samad_monitor.monitor import SamadFoodMonitor
+    from samad_monitor.utils.date_utils import get_current_week_range, get_previous_week_range, get_tehran_tz
+    from tests.fixtures.samad_payloads import (
+        make_fake_jwt,
+        published_programs_v2_response,
+        release_response,
+        user_profile_response,
+    )
+    from tests.test_monitor_scenarios import _make_test_config
+
+    tz = get_tehran_tz()
+    day1_morning = datetime(2026, 11, 8, 9, 0, tzinfo=tz)
+    day1_night = datetime(2026, 11, 8, 22, 30, tzinfo=tz)
+    day2_noon = datetime(2026, 11, 9, 12, 0, tzinfo=tz)
+
+    curr_sat = get_current_week_range(day1_morning).start_iso
+    prev_sat = get_previous_week_range(day1_morning).start_iso
+
+    cfg = _make_test_config(tmp_path)
+    api_calls: List[str] = []
+
+    def _samad_handler(request: httpx.Request) -> httpx.Response:
+        path = request.url.path
+        if path.endswith("/rest/config/release"):
+            return httpx.Response(200, json=release_response())
+        if path.endswith("/rest/users/me"):
+            return httpx.Response(200, json=user_profile_response())
+        if path.endswith("/selfs"):
+            return httpx.Response(
+                200,
+                json={
+                    "type": "SUCCESS",
+                    "code": 0,
+                    "payload": [
+                        {"id": 102, "name": "سلف خوابگاه کوی پسران ولنجک", "type": "NORMAL", "freeRestaurant": False},
+                    ],
+                },
+            )
+        if path.endswith("/programs/v2"):
+            ws = str(request.url.params.get("weekStartDate") or "")
+            api_calls.append(ws)
+            target_d = prev_sat if prev_sat in ws else curr_sat
+            return httpx.Response(
+                200,
+                json=published_programs_v2_response(
+                    [{"date": target_d, "meal_type_id": 7, "meal_type_name": "ناهار", "food_name": "قیمه کوی ولنجک"}]
+                ),
+            )
+        return httpx.Response(404)
+
+    sm = SessionManager(
+        storage_state_path=cfg.storage_state_path,
+        browser_profile_dir=cfg.browser_profile_dir,
+        samad_web_url=cfg.samad_web_url,
+        default_university_api_url=cfg.samad_university_api_url,
+    )
+    sm.save_tokens(access_token=make_fake_jwt("401243001"), refresh_token="ref-1")
+    client = SamadClient(config=cfg, session_manager=sm, http_transport=httpx.MockTransport(_samad_handler))
+    monitor = SamadFoodMonitor(config=cfg, client=client)
+
+    # پیش‌بارگذاری روز اول (یک بار برای curr و یک بار برای prev)
+    monitor.warm_daily_menus_if_needed(reference_dt=day1_morning)
+    assert len(api_calls) == 2
+
+    # ۱۰ بار درخواست هفته جاری و هفته قبل در طول روز اول -> صفر درخواست به سماد!
+    for _ in range(5):
+        _, m_curr, _, _ = monitor.fetch_week_on_demand("curr", reference_dt=day1_night)
+        _, m_prev, _, _ = monitor.fetch_week_on_demand("prev", reference_dt=day1_night)
+        assert m_curr is not None and m_prev is not None
+    assert len(api_calls) == 2
+
+    # روز دوم: هفته قبل همچنان صفر درخواست جدید دارد، هفته جاری فقط ۱ بار تجدید می‌شود!
+    monitor.fetch_week_on_demand("prev", reference_dt=day2_noon)
+    assert len(api_calls) == 2
+
+    monitor.fetch_week_on_demand("curr", reference_dt=day2_noon)
+    assert len(api_calls) == 3
+    monitor.fetch_week_on_demand("curr", reference_dt=day2_noon)
+    assert len(api_calls) == 3
+
+
+

@@ -156,6 +156,9 @@ class AdaptiveScheduler:
 
             if summary.status in {CheckStatus.MENU_PUBLISHED, CheckStatus.MENU_NOT_PUBLISHED}:
                 self._consecutive_errors = 0
+                # پیش‌بارگذاری یک‌باردرروز منوی هفته جاری و هفته قبل در کش RAM و SQLite
+                if not self._stop_event.is_set():
+                    self.monitor.warm_daily_menus_if_needed()
             else:
                 self._consecutive_errors += 1
 
